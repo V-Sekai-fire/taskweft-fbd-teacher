@@ -29,6 +29,8 @@ def blocks_of(text: str) -> list[str]:
 
 def rows_of(stage: Path, split_dir: Path) -> list[dict]:
     fam = json.loads((stage / "manifest.json").read_text(encoding="utf-8")).get("family", "fbd")
+    if not (split_dir / f"{fam}_root").is_dir():
+        return []
     root = pq.read_table(split_dir / f"{fam}_root").to_pylist()
     cands = pq.read_table(split_dir / f"{fam}_candidates").to_pylist()
     ref = {c["row_key"]: c for c in cands if c["candidate"] == "rank1"}
@@ -56,10 +58,14 @@ def tokens(texts: list[str]) -> list[int] | None:
 
 
 def census(stages: list[Path], holdout_families: set[str], holdout_blocks: set[str], count_tokens: bool) -> tuple[dict, list[str]]:
-    train, holdout = [], []
+    train, test, holdout = [], [], []
     for s in stages:
         train += rows_of(s, s / "data")
-        holdout += rows_of(s, s / "holdout" / "data")
+        if (s / "test" / "data").is_dir():
+            test += rows_of(s, s / "test" / "data")
+        for legacy in ("holdout", "evaluation"):
+            if (s / legacy / "data").is_dir() and any((s / legacy / "data").iterdir()):
+                holdout += rows_of(s, s / legacy / "data")
     problems = []
     fam_counts = collections.Counter(r["family"] for r in train)
     tpl_counts = collections.Counter(r["template"] for r in train)
@@ -77,7 +83,7 @@ def census(stages: list[Path], holdout_families: set[str], holdout_blocks: set[s
             problems.append(f"held-out block kind {b} appears in no holdout row either; the axis is empty")
     tok = tokens([r["text"] for r in train]) if count_tokens else None
     report = {
-        "train_rows": len(train), "holdout_rows": len(holdout),
+        "train_rows": len(train), "test_rows": len(test), "evaluation_rows": len(holdout),
         "families": dict(fam_counts), "templates": dict(sorted(tpl_counts.items())),
         "frames": dict(collections.Counter(f"{r['template']}#{r['frame']}" for r in train)),
         "block_kinds": dict(sorted(block_counts.items())),

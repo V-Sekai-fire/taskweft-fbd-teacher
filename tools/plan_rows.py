@@ -126,10 +126,15 @@ def _refuse(text: str) -> str:
 def plan_row(goal_index: int, seed: int, compiler: Path) -> ReactRow:
     domain, goal, arg_names, frames = GOALS[goal_index]
     vals = _args(seed, arg_names)
-    todo = goal.format(**vals)
+    # The planner runs once per goal with placeholder arguments; the seed's values are
+    # substituted into the lifted text, which is the same diagram with other literals.
+    canonical = {n: f"ARG_{n.upper()}" for n in arg_names}
+    todo = goal.format(**canonical)
     key = re.sub(r"[^A-Za-z0-9_]+", "_", f"{domain[:-3]}_{todo}")
     guest = plan_guest(domain, todo, key)
     text = lift(compiler, guest)
+    for n, v in vals.items():
+        text = text.replace(canonical[n], v)
     is_react = "in trigger : BOOL" in text
     rank3 = _mutate_react(text) if is_react else _mutate_steps(text)
     if rank3 == text:
