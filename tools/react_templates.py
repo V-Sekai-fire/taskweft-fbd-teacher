@@ -39,8 +39,12 @@ def _trace(ticks: list[dict]) -> str:
 
 
 def _sweep(rng: random.Random) -> list[dict]:
-    return [{"lx": round(rng.uniform(-1.0, 1.0), 3), "ly": round(rng.uniform(-1.0, 1.0), 3),
-             "btn": False, "tracker_ok": True} for _ in range(TICKS)]
+    # The first tick pins the stick to its corners, so a halved speed cap or a
+    # swapped axis shows on every trace rather than only when the draw happens to.
+    ticks = [{"lx": round(rng.uniform(-1.0, 1.0), 3), "ly": round(rng.uniform(-1.0, 1.0), 3),
+              "btn": False, "tracker_ok": True} for _ in range(TICKS)]
+    ticks[0]["lx"], ticks[0]["ly"] = 1.0, -1.0
+    return ticks
 
 
 def _pulse(hold_ticks: int) -> list[dict]:
