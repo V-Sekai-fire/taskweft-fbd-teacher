@@ -231,6 +231,11 @@ def assert_controls(key: str, scores: dict[str, dict]) -> None:
         raise SystemExit(f"negative control failed on {key}: rank5 compiled: {r5}")
 
 
+def _read(path: Path) -> str:
+    """A missing artefact is an empty string; ETNF forbids the null."""
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
 def build_row(compiler: Path, out: Path, template_id: str, seed: int, negative_control: bool) -> dict:
     row = row_for(template_id, seed)
     key = f"fbd/{template_id}/{seed}"
@@ -243,13 +248,16 @@ def build_row(compiler: Path, out: Path, template_id: str, seed: int, negative_c
         xml_path.write_text(getattr(row, name), encoding="utf-8")
         scores[name] = score_candidate(compiler, row, name, xml_path, negative_control)
         cands.append({"candidate": name, "rank": rank,
-                      "fbd_xml": str(xml_path.relative_to(out)).replace(os.sep, "/"),
+                      "fbd_text": "",
+                      "fbd_xml": getattr(row, name),
+                      "plan_json": "", "result_json": "",
+                      "fbd_path": f"rows/{template_id}/{seed}/{name}",
                       "fbd_sha": hashlib.sha256(getattr(row, name).encode("utf-8")).hexdigest(),
                       "provenance": f"constructed:{template_id}:seed:{seed}"})
     assert_controls(key, scores)
     xml_blocks = sorted(set(re.findall(r'typeName="([A-Z_]+)"', row.rank1)))
     return {"key": key, "intent": row.intent, "template_id": template_id, "seed": seed, "frame_id": row.frame_id,
-            "blocks": xml_blocks,
+            "blocks": xml_blocks, "traces": [],
             "candidates": cands, "scores": [scores[n] for n, _ in CANDIDATES]}
 
 
@@ -409,14 +417,19 @@ def build_react_row(compiler: Path, out: Path, template_id: str, seed: int, nega
             reference = scores[name].pop("_outputs")
         else:
             scores[name].pop("_outputs", None)
+        xml = row_dir / f"{name}.plcopen.xml"
         cands.append({"candidate": name, "rank": rank,
-                      "fbd_text": str(fbd.relative_to(out)).replace(os.sep, "/"),
+                      "fbd_text": getattr(row, name),
+                      "fbd_xml": xml.read_text(encoding="utf-8") if xml.is_file() else "",
+                      "plan_json": _read(row_dir / f"{name}.plan.json"),
+                      "result_json": _read(row_dir / f"{name}.result.json"),
+                      "fbd_path": f"rows/{template_id}/{seed}/{name}",
                       "fbd_sha": hashlib.sha256(getattr(row, name).encode("utf-8")).hexdigest(),
-                      "traces": len(traces),
                       "provenance": f"constructed:{family}:{template_id}:seed:{seed}"})
     assert_controls(key, scores)
     return {"key": key, "intent": row.intent, "template_id": template_id, "seed": seed, "frame_id": row.frame_id,
             "blocks": sorted(set(signatures_of(row.rank1) if row.host in ("godot", "trainer") else blocks_of(row.rank1))),
+            "traces": list(row.traces),
             "candidates": cands, "scores": [scores[n] for n, _ in CANDIDATES]}
 
 
@@ -433,6 +446,7 @@ def tables(rows: list[dict], stub: tuple = STUB) -> tuple[pa.Table, pa.Table, pa
         "seed": pa.array([r["seed"] for r in rows], pa.int64()),
         "frame_id": pa.array([r.get("frame_id", 0) for r in rows], pa.int64()),
         "blocks": pa.array([",".join(r.get("blocks", [])) for r in rows], pa.string()),
+        "traces": pa.array([r.get("traces", []) for r in rows], pa.list_(pa.string())),
         "provenance": ["constructed:template"] * len(rows),
     })
     cand_rows = [{"row_key": r["key"], **c} for r in rows for c in r["candidates"]]

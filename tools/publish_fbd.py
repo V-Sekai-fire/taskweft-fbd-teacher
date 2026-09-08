@@ -146,6 +146,29 @@ Three splits. `train` trains. `test` is the same distribution with every tenth s
 held out: the gate after training. `evaluation` is whole held-out families and block
 kinds ({", ".join(held) or "none"}), never trained or tuned on.
 
+## What a row carries
+
+Every artefact is in the parquet; nothing points outside it.
+
+`{family}_root`, one row per intent: `key`, `intent`, `template_id`, `seed`,
+`frame_id`, `blocks` (the block kinds and signatures the reference diagram uses),
+`traces` (the input traces as JSON strings, empty where the family has none), and
+the EditScore stub columns.
+
+`{family}_candidates`, three per row: `candidate` and `rank`, `fbd_text` (the
+compiler's text form, verbatim), `fbd_xml` (the PLCopen XML, verbatim),
+`plan_json` and `result_json` (what the compiler planned and what the runner
+returned, where the family has a runner), `fbd_sha` (sha256 of the text the
+candidate was built from), `fbd_path` (where the writer kept it on disk) and
+`provenance`. An artefact a family does not produce is an empty string, never a
+null.
+
+`{family}_scores`, three per row: `parses`, `compiles`, `runs`, `effect_matches`,
+`steps`, `wall_ms`, `refusal`.
+
+`{family}` is the joined view and the default config: the root row with its
+candidates, each carrying its scores.
+
 Rows: {manifest["rows"]} ({counts}).
 Templates: {json.dumps(manifest["templates"])}. Compiler: taskweft-fbd-compiler
 {manifest["compiler_sha"]}. Source: v-sekai-fabric/taskweft-fbd-teacher.

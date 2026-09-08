@@ -54,8 +54,11 @@ defmodule TaskweftFbdTeacher.SpeakingFacesTest do
       DF.from_parquet!(Path.join([out, "train", "still", "visual", "sub_007_trial_1.parquet"]))
 
     assert DF.n_rows(visual) == 2
-    assert DF.dtypes(visual)["png"] == :binary
-    assert Enum.all?(DF.to_rows(visual), &(&1["png"] == @png))
+    assert DF.dtypes(visual)["image"] == {:struct, [{"bytes", :binary}, {"path", :string}]}
+    rows = DF.to_rows(visual)
+    assert Enum.all?(rows, &(&1["image"]["bytes"] == @png))
+    assert Enum.all?(rows, &String.ends_with?(&1["image"]["path"], ".png"))
+    assert "7_1_1_1_1_2.png" in Enum.map(rows, & &1["image"]["path"])
 
     bad = [{~c"sub_7_io/trial_1/rgb_image/7_1_1_1_1_2.png", <<"not a png">>}]
     {:ok, zip2} = :zip.create(String.to_charlist(Path.join(dir, "bad.zip")), bad)

@@ -4,6 +4,11 @@ defmodule TaskweftFbdTeacher.SpeakingFaces do
   parquet in normal form, one subject at a time, verifying the Hub's sha256
   before the zip is read and refusing any entry whose bytes are not a PNG or
   a RIFF wav.
+
+  Pictures and audio are written in the shape the dataset viewer renders: a
+  struct of `bytes` and `path` rather than a bare binary, with the card
+  declaring the column an image or an audio feature. A bare binary column shows
+  as a byte count and nothing else.
   """
 
   alias Explorer.DataFrame, as: DF
@@ -242,7 +247,7 @@ defmodule TaskweftFbdTeacher.SpeakingFaces do
       trial: col(rows, & &1.trial, {:s, 8}),
       position: col(rows, & &1.pos, {:s, 8}),
       frame: col(rows, & &1.frame, {:s, 32}),
-      png: Series.from_list(Enum.map(rows, &elem(&1, 1)), dtype: :binary)
+      image: media(rows, "png")
     )
   end
 
@@ -253,7 +258,7 @@ defmodule TaskweftFbdTeacher.SpeakingFaces do
       position: col(rows, & &1.pos, {:s, 8}),
       command: col(rows, & &1.cmd, {:s, 16}),
       frame: col(rows, & &1.frame, {:s, 32}),
-      png: Series.from_list(Enum.map(rows, &elem(&1, 1)), dtype: :binary)
+      image: media(rows, "png")
     )
   end
 
@@ -264,13 +269,33 @@ defmodule TaskweftFbdTeacher.SpeakingFaces do
       position: col(rows, & &1.pos, {:s, 8}),
       command: col(rows, & &1.cmd, {:s, 16}),
       mic: col(rows, & &1.mic, {:s, 8}),
-      wav: Series.from_list(Enum.map(rows, &elem(&1, 1)), dtype: :binary)
+      audio: media(rows, "wav")
     )
   end
 
   defp col(rows, getter, dtype) do
     Series.from_list(Enum.map(rows, fn {key, _} -> getter.(key) end), dtype: dtype)
   end
+
+  @doc """
+  The viewer's media shape: `{bytes, path}`. The path names the entry inside the
+  source archive, so a row still says where its picture came from.
+  """
+  def media(rows, ext) do
+    Series.from_list(
+      Enum.map(rows, fn {key, bin} -> %{"bytes" => bin, "path" => name_of(key, ext)} end),
+      dtype: {:struct, [{"bytes", :binary}, {"path", :string}]}
+    )
+  end
+
+  defp name_of(%{kind: :still} = k, ext),
+    do: "#{k.sub}_#{k.trial}_1_#{k.pos}_#{k.frame}_#{k.stream}.#{ext}"
+
+  defp name_of(%{kind: :cmd} = k, ext),
+    do: "#{k.sub}_#{k.trial}_2_#{k.pos}_#{k.cmd}_#{k.frame}_#{k.stream}.#{ext}"
+
+  defp name_of(%{kind: :utterance} = k, ext),
+    do: "#{k.sub}_#{k.trial}_2_#{k.pos}_#{k.cmd}_#{k.mic}.#{ext}"
 
   def pad(subject), do: String.pad_leading(Integer.to_string(subject), 3, "0")
 
@@ -393,6 +418,71 @@ defmodule TaskweftFbdTeacher.SpeakingFaces do
     {:ok, manifest}
   catch
     {:refused, path, reason} -> {:error, {path, reason}}
+  end
+
+  @doc """
+  The dataset card. The `dataset_info` block declares which columns are pictures
+  and which are audio, which is how the viewer knows to render them rather than
+  print a byte count; the `configs` block gives one config per relation with the
+  three splits.
+  """
+  def card(repo, counts) do
+    """
+    ---
+    license: cc-by-4.0
+    task_categories:
+    - image-classification
+    - audio-classification
+    tags:
+    - multimodal
+    - thermal
+    - speaking-faces
+    - weftspun
+    configs:
+    #{configs(counts)}dataset_info:
+      features:
+      - name: sub_id
+        dtype: int16
+      - name: trial
+        dtype: int8
+      - name: position
+        dtype: int8
+      - name: image
+        dtype: image
+      - name: audio
+        dtype: audio
+    ---
+
+    # #{repo |> String.split("/") |> List.last()}
+
+    The SpeakingFaces set converted to the workspace's form: per subject, per
+    trial and per stream, one ZStandard parquet in Essential Tuple Normal Form,
+    with the picture bytes in the column rather than a path beside it. Streams
+    are `thermal` (464x348), `visual` (768x512) and `visual_aligned`, over nine
+    camera positions and two sessions; the command session carries the trimmed
+    audio from both microphones.
+
+    Three splits, held out by subject: `train` is the authors' Train, `test`
+    their Valid, and `evaluation` their Test, so no subject appears in more than
+    one. The population is narrow, 90 Asian, 46 Caucasian and 6 Black subjects
+    aged 20 to 64, which is why this set validates a fit rather than serving as
+    an identity prior.
+
+    Source: `issai/Speaking_Faces` at `#{@source_sha}`, CC BY 4.0 on the
+    project page with MIT code at `IS2AI/SpeakingFaces`. Cite
+    doi:10.3390/s21103465.
+    """
+  end
+
+  defp configs(counts) do
+    for {name, splits} <- counts, into: "" do
+      "- config_name: #{name}
+  data_files:
+" <>
+        for({split, dir} <- splits, into: "", do: "  - split: #{split}
+    path: #{dir}/**/*.parquet
+")
+    end
   end
 
   defp group_name({rel, 0, trial}), do: "#{rel}/trial_#{trial}"
