@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "Cite this repository when the teacher, its dataset or its gates are used."
+title: "taskweft-fbd-teacher"
+type: software
+license: MIT
+authors:
+  - family-names: Lee
+    given-names: K. S. Ernest
+    alias: iFire
+repository-code: "https://github.com/v-sekai-fabric/taskweft-fbd-teacher"
+abstract: "A teacher language model whose only output is an IEC 61131-3 Function Block Diagram, gained in three steps: a constructed EditScore-shaped dataset, continued pretraining of Gemma 4 E2B under QAT, and reinforcement training with the compiler and the sandbox as the hard half of the reward."
