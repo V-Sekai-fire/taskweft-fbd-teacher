@@ -23,8 +23,12 @@ import pyarrow.parquet as pq
 BLOCK_RE = re.compile(r"^\w+ = ([A-Z_]+)(?:\[|\()", re.M)
 
 
+SIG_RE = re.compile(r"CALL\[([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\]")
+
+
 def blocks_of(text: str) -> list[str]:
-    return BLOCK_RE.findall(text)
+    """Block kinds, with a CALL counted by its signature so an API surface is enumerated."""
+    return [b for b in BLOCK_RE.findall(text) if b != "CALL"] + SIG_RE.findall(text)
 
 
 def rows_of(stage: Path, split_dir: Path) -> list[dict]:

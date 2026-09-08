@@ -57,15 +57,29 @@ def hf_token_from_bao() -> str:
     return hf
 
 
+SCORED = {
+    "fbd": "the compiler and a runner that performed the plan",
+    "react": "the compiler's reference scan on three constructed input traces per row",
+    "harness": "the compiler's reference scan, rank1's outputs the reference for the others",
+    "compose": "the compiler's reference scan over the composed controller's traces",
+    "plan": "the compiler's step lowering, compared step for step against rank1's plan",
+    "godot": "the engine itself: api_runner.gd performed the calls on the fixture scene and the returns were read back",
+    "trainer": "the trainer config: the calls were applied to the mjlab task config and the term table read back",
+}
+
+
 def readme(manifest: dict, hub: str = "chibifire/taskweft-fbd-editscore-train") -> str:
     family = manifest.get("family", "fbd")
     names = [family, f"{family}_root", f"{family}_candidates", f"{family}_scores"]
-    scored = ("the compiler's reference scan on three constructed input traces per row"
-              if family == "react" else "the compiler and a runner that performed the plan")
+    scored = SCORED.get(family, SCORED["fbd"])
+    splits = [("train", "data"), ("test", "test/data"), ("evaluation", "evaluation/data")]
+    present = [(sp, d) for sp, d in splits if manifest.get(f"{sp}_rows", 0) > 0]
     configs = "".join(
-        f"- config_name: {n}\n" + ("  default: true\n" if n == manifest.get("family", "fbd") else "")
-        + f"  data_files:\n  - split: train\n    path: data/{n}/*.parquet\n  - split: holdout\n    path: holdout/data/{n}/*.parquet\n"
+        f"- config_name: {n}\n" + ("  default: true\n" if n == family else "")
+        + "  data_files:\n" + "".join(f"  - split: {sp}\n    path: {d}/{n}/*.parquet\n" for sp, d in present)
         for n in names)
+    held = manifest.get("holdout_families", []) + manifest.get("holdout_blocks", [])
+    counts = ", ".join(f"{manifest.get(f'{sp}_rows', 0)} {sp}" for sp, _ in splits)
     return f"""---
 license: mit
 task_categories:
@@ -85,11 +99,15 @@ Intents and the IEC 61131-3 Function Block Diagrams that carry them out, as an
 EditScore-shaped corpus: one root row per intent, three candidates per row (rank1 the
 reference diagram, rank3 one that compiles and does the wrong thing, rank5 one the
 compiler refuses), and one score row per candidate from {scored}. Every row is
-constructed from a template and a seed, so the
-labels are true by construction and the corpus regenerates from the seeds. Controls
-were asserted on every row before the emit; the holdout split never trains.
+constructed from a template and a seed, so the labels are true by construction and
+the corpus regenerates from the seeds. Controls were asserted on every row before
+the emit.
 
-Rows: {manifest["rows"]} ({manifest["train_rows"]} train, {manifest["holdout_rows"]} holdout).
+Three splits. `train` trains. `test` is the same distribution with every tenth seed
+held out: the gate after training. `evaluation` is whole held-out families and block
+kinds ({", ".join(held) or "none"}), never trained or tuned on.
+
+Rows: {manifest["rows"]} ({counts}).
 Templates: {json.dumps(manifest["templates"])}. Compiler: taskweft-fbd-compiler
 {manifest["compiler_sha"]}. Source: v-sekai-fabric/taskweft-fbd-teacher.
 """
@@ -116,7 +134,11 @@ def main() -> None:
         api.upload_file(path_or_fileobj=str(stage / "README.md"), path_in_repo="README.md",
                         repo_id=args.hub, repo_type="dataset")
     else:
-        api.upload_folder(folder_path=str(stage), repo_id=args.hub, repo_type="dataset")
+        # rows/ is the writer's scratch tree; the parquets carry every row
+        if any(f.startswith("rows/") for f in api.list_repo_files(args.hub, repo_type="dataset")):
+            api.delete_folder(path_in_repo="rows", repo_id=args.hub, repo_type="dataset")
+        api.upload_folder(folder_path=str(stage), repo_id=args.hub, repo_type="dataset",
+                          ignore_patterns=["rows/**", "README.md.bak"])
     files = api.list_repo_files(args.hub, repo_type="dataset")
     parquets = [f for f in files if f.endswith(".parquet")]
     print(f"published {args.hub}: {len(files)} file(s), {len(parquets)} parquet(s)")

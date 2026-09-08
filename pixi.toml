@@ -37,6 +37,11 @@ write-react-negative-control = "python tools/write_fbd_rows.py --family react --
 [feature.publish.tasks]
 publish = "python tools/publish_fbd.py --stage work/stage --hub chibifire/taskweft-fbd-editscore-train"
 publish-react = "python tools/publish_fbd.py --stage work/stage_react --hub chibifire/taskweft-fbd-react-train"
+publish-harness = "python tools/publish_fbd.py --stage work/stage_harness --hub chibifire/taskweft-fbd-harness-train"
+publish-compose = "python tools/publish_fbd.py --stage work/stage_compose --hub chibifire/taskweft-fbd-compose-train"
+publish-plan = "python tools/publish_fbd.py --stage work/stage_plan --hub chibifire/taskweft-fbd-plan-train"
+publish-godot = "python tools/publish_fbd.py --stage work/stage_godot --hub chibifire/taskweft-fbd-godot-train"
+publish-trainer = "python tools/publish_fbd.py --stage work/stage_trainer --hub chibifire/taskweft-fbd-trainer-train"
 
 [feature.measure.tasks]
 measure-forms = "python tools/measure_forms.py --stage work/stage"

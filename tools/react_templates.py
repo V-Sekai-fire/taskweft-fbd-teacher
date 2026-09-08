@@ -35,6 +35,7 @@ class ReactRow:
     traces: list[str]
     expect: Callable[[list[list[dict]]], bool] | None
     frame_id: int = 0
+    host: str = ""
 
 
 def _trace(ticks: list[dict]) -> str:
