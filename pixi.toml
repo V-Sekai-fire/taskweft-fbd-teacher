@@ -1,0 +1,28 @@
+[workspace]
+name = "taskweft-fbd-teacher"
+channels = ["conda-forge"]
+platforms = ["win-64", "linux-64"]
+
+# One environment per usage (memory: one-pixi-env-per-usage). The writer needs only
+# pyarrow; publishing needs the Hub client; training environments land with steps 2
+# and 3 and carry their own torch pins.
+[feature.write.dependencies]
+python = "3.11.*"
+pyarrow = ">=17"
+
+[feature.publish.dependencies]
+python = "3.11.*"
+pyarrow = ">=17"
+huggingface_hub = ">=0.25"
+
+[environments]
+write = { features = ["write"], no-default-feature = true }
+publish = { features = ["publish"], no-default-feature = true }
+
+[feature.write.tasks]
+write-rows = "python tools/write_fbd_rows.py --rows 5000 --out work/stage"
+write-smoke = "python tools/write_fbd_rows.py --rows 20 --out work/smoke"
+write-negative-control = "python tools/write_fbd_rows.py --rows 4 --out work/control --negative-control"
+
+[feature.publish.tasks]
+publish = "python tools/publish_fbd.py --stage work/stage --hub chibifire/taskweft-fbd-editscore-train"
