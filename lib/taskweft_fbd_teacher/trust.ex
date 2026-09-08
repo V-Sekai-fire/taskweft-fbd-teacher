@@ -87,13 +87,33 @@ defmodule TaskweftFbdTeacher.Trust do
   @doc """
   Whether the subject trusts this source. A hub repository is trusted when the
   owner is, so `chibifire/anything` passes under `huggingface.co/chibifire`.
+
+  The answer is computed here rather than delegated. One subject, one verb and
+  a flat set of objects is a membership test, and the ReBAC library earns its
+  place where relations compose. It stays as the **cross-check**:
+  `agrees_with_rebac?/2` asserts the two give the same answer wherever the
+  library loads, which is a stronger statement than either alone and does not
+  make a Windows library search path a condition of publishing.
   """
   def trusted?(list, source) do
-    g = graph(list)
+    objects = MapSet.new(list.objects)
+    Enum.any?(candidates(source), &MapSet.member?(objects, &1))
+  end
 
-    Enum.any?(candidates(source), fn candidate ->
-      ReBAC.check_rel(g, list.subject, list.verb, candidate) == true
-    end)
+  @doc "Whether the ReBAC library agrees, where it loads. `:unavailable` when it does not."
+  def agrees_with_rebac?(list, source) do
+    if available?() do
+      g = graph(list)
+
+      rebac =
+        Enum.any?(candidates(source), fn candidate ->
+          ReBAC.check_rel(g, list.subject, list.verb, candidate) == true
+        end)
+
+      rebac == trusted?(list, source)
+    else
+      :unavailable
+    end
   end
 
   defp candidates(source) do
@@ -110,11 +130,9 @@ defmodule TaskweftFbdTeacher.Trust do
 
   @doc "Refuses with the source named, so a caller cannot mistake a refusal for a pass."
   def check(list, source) do
-    cond do
-      not available?() -> @unavailable
-      trusted?(list, source) -> :ok
-      true -> {:error, "REFUSED: #{source} is not a trusted data source"}
-    end
+    if trusted?(list, source),
+      do: :ok,
+      else: {:error, "REFUSED: #{source} is not a trusted data source"}
   end
 
   @doc """

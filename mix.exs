@@ -56,7 +56,8 @@ defmodule TaskweftFbdTeacher.MixProject do
       {:jason, "~> 1.4"},
       {:req, "~> 0.5"},
       {:tokenizers, "~> 0.5"},
-      {:taskweft_rebac, "~> 0.2.0-dev"}
+      {:taskweft_rebac, "~> 0.2.0-dev"},
+      {:yaml_elixir, "~> 2.9"}
     ]
   end
 end

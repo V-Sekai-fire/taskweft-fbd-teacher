@@ -20,11 +20,15 @@ defmodule TaskweftFbdTeacher.TrustTest do
     assert "huggingface.co/chibifire" in list.objects
   end
 
-  test "an unloaded native library is a named refusal, never an undefined function" do
-    if Trust.available?() do
-      assert Trust.check(@list, "chibifire/x") == :ok
-    else
-      assert Trust.check(@list, "chibifire/x") == Trust.unavailable()
+  test "the answer does not depend on the native library loading" do
+    assert Trust.check(@list, "chibifire/x") == :ok
+    assert {:error, _} = Trust.check(@list, "someone/else")
+  end
+
+  @tag :rebac
+  test "the ReBAC library agrees wherever it loads" do
+    for source <- ["chibifire/x", "someone/else", "v-sekai-fabric/weftspun-keypoint"] do
+      assert Trust.agrees_with_rebac?(@list, source) in [true, :unavailable]
     end
   end
 
