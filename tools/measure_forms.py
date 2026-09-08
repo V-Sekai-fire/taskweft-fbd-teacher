@@ -92,7 +92,7 @@ def main() -> None:
         sys.exit("FAIL: no rank1 candidates in the stage")
     scratch = Path(tempfile.mkdtemp(prefix="measure_forms_"))
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        results = list(pool.map(lambda c: forms_of(compiler, args.stage / c["fbd_xml_path"], scratch), rank1))
+        results = list(pool.map(lambda c: forms_of(compiler, args.stage / c["fbd_xml"], scratch), rank1))
     failures = [(c["row_key"], r["error"]) for c, r in zip(rank1, results) if "error" in r]
     ok = [r for r in results if "error" not in r]
 
