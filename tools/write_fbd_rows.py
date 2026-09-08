@@ -29,10 +29,12 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fbd_templates import TEMPLATES, Row, row_for  # noqa: E402
+from react_templates import REACT_TEMPLATES, ReactRow, react_row_for  # noqa: E402
 
 HERE = Path(__file__).resolve().parent.parent
 CANDIDATES = [("rank1", 1), ("rank3", 3), ("rank5", 5)]
 STUB = ("fbd", "intent_to_fbd", "instruction_following", "input_intent", "text")
+REACT_STUB = ("react", "intent_to_controller", "instruction_following", "input_intent", "text")
 
 
 def find_compiler(explicit: str | None) -> Path:
@@ -150,8 +152,74 @@ def build_row(compiler: Path, out: Path, template_id: str, seed: int, negative_c
             "candidates": cands, "scores": [scores[n] for n, _ in CANDIDATES]}
 
 
-def tables(rows: list[dict]) -> tuple[pa.Table, pa.Table, pa.Table, pa.Table]:
-    task_type, dimension, input_column, input_asset_kind = STUB[1], STUB[2], STUB[3], STUB[4]
+def run_compiler(compiler: Path, *args: str) -> tuple[int, str, str]:
+    p = subprocess.run([str(compiler), *args], capture_output=True, text=True, timeout=120)
+    return p.returncode, p.stdout, p.stderr
+
+
+def score_react(compiler: Path, row: ReactRow, name: str, fbd: Path, traces: list[Path], negative_control: bool) -> dict:
+    """A controller: parses (the text form reads), compiles (the netlist builds), runs (the
+    reference scan finishes every trace without a fault), effect (its outputs are the
+    numbers the intent implies), steps = ticks simulated."""
+    t0 = time.perf_counter()
+    code, xml, err = run_compiler(compiler, "to-xml", str(fbd))
+    parses = code == 0
+    refusal = "" if parses else (err.strip() or "to-xml refused")
+    compiles, runs, effect, steps = False, False, False, 0
+    if parses:
+        fbd.with_suffix(".plcopen.xml").write_text(xml, encoding="utf-8")
+        code, _, err = run_compiler(compiler, "check", str(fbd))
+        compiles = code == 0
+        if not compiles:
+            refusal = err.strip()
+    if compiles:
+        outs: list[list[dict]] = []
+        runs = True
+        for trace in traces:
+            code, out, err = run_compiler(compiler, "sim", str(fbd), str(trace))
+            lines = [json.loads(l) for l in out.splitlines() if l.strip()]
+            if code != 0 or any("fault" in l for l in lines):
+                runs = False
+                refusal = err.strip() or next((l["fault"] for l in lines if "fault" in l), "")
+                break
+            outs.append([l["out"] for l in lines])
+            steps += len(lines)
+        effect = runs and row.expect(outs)
+    wall_ms = int((time.perf_counter() - t0) * 1000)
+    if negative_control and name == "rank1":
+        parses, compiles, runs, effect = False, False, False, False
+    return {"candidate": name, "parses": parses, "compiles": compiles, "runs": runs,
+            "effect_matches": effect, "steps": steps, "wall_ms": wall_ms, "refusal": refusal}
+
+
+def build_react_row(compiler: Path, out: Path, template_id: str, seed: int, negative_control: bool) -> dict:
+    row = react_row_for(template_id, seed)
+    key = f"react/{template_id}/{seed}"
+    row_dir = out / "rows" / template_id / str(seed)
+    row_dir.mkdir(parents=True, exist_ok=True)
+    traces = []
+    for k, text in enumerate(row.traces):
+        tp = row_dir / f"trace_{k}.json"
+        tp.write_text(text + "\n", encoding="utf-8")
+        traces.append(tp)
+    scores: dict[str, dict] = {}
+    cands = []
+    for name, rank in CANDIDATES:
+        fbd = row_dir / f"{name}.fbd"
+        fbd.write_text(getattr(row, name), encoding="utf-8")
+        scores[name] = score_react(compiler, row, name, fbd, traces, negative_control)
+        cands.append({"candidate": name, "rank": rank,
+                      "fbd_text": str(fbd.relative_to(out)).replace(os.sep, "/"),
+                      "fbd_sha": hashlib.sha256(getattr(row, name).encode("utf-8")).hexdigest(),
+                      "traces": len(traces),
+                      "provenance": f"constructed:{template_id}:seed:{seed}"})
+    assert_controls(key, scores)
+    return {"key": key, "intent": row.intent, "template_id": template_id, "seed": seed,
+            "candidates": cands, "scores": [scores[n] for n, _ in CANDIDATES]}
+
+
+def tables(rows: list[dict], stub: tuple = STUB) -> tuple[pa.Table, pa.Table, pa.Table, pa.Table]:
+    task_type, dimension, input_column, input_asset_kind = stub[1], stub[2], stub[3], stub[4]
     root = pa.table({
         "key": [r["key"] for r in rows],
         "task_type": [task_type] * len(rows),
@@ -174,10 +242,11 @@ def tables(rows: list[dict]) -> tuple[pa.Table, pa.Table, pa.Table, pa.Table]:
     return root, candidates, scores, joined
 
 
-def write_stage(stage: Path, rows: list[dict], split: str) -> dict:
-    root, candidates, scores, joined = tables(rows)
+def write_stage(stage: Path, rows: list[dict], split: str, family: str = "fbd") -> dict:
+    stub = REACT_STUB if family == "react" else STUB
+    root, candidates, scores, joined = tables(rows, stub)
     counts = {}
-    for name, table in [("fbd_root", root), ("fbd_candidates", candidates), ("fbd_scores", scores), ("fbd", joined)]:
+    for name, table in [(f"{family}_root", root), (f"{family}_candidates", candidates), (f"{family}_scores", scores), (family, joined)]:
         for col in table.column_names:
             n = table.column(col).null_count
             if n:
@@ -195,6 +264,8 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=HERE / "work" / "stage")
     ap.add_argument("--compiler", default=None)
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--family", choices=["fbd", "react"], default="fbd",
+                    help="fbd: the operating-system step programs; react: the per-frame controllers")
     ap.add_argument("--negative-control", action="store_true",
                     help="hand rank5's verdict to rank1; the controls must refuse the emit")
     args = ap.parse_args()
@@ -204,19 +275,21 @@ def main() -> None:
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
-    template_ids = list(TEMPLATES)
+    family = args.family
+    template_ids = list(REACT_TEMPLATES if family == "react" else TEMPLATES)
+    builder = build_react_row if family == "react" else build_row
     jobs = [(template_ids[(i // 10) % len(template_ids)], i) for i in range(args.rows)]
 
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        rows = list(pool.map(lambda j: build_row(compiler, out, j[0], j[1], args.negative_control), jobs))
+        rows = list(pool.map(lambda j: builder(compiler, out, j[0], j[1], args.negative_control), jobs))
     wall = time.perf_counter() - t0
 
     train = [r for r in rows if r["seed"] % 10 != 0]
     holdout = [r for r in rows if r["seed"] % 10 == 0]
-    counts = {"train": write_stage(out, train, "train"), "holdout": write_stage(out / "holdout", holdout, "holdout")}
+    counts = {"train": write_stage(out, train, "train", family), "holdout": write_stage(out / "holdout", holdout, "holdout", family)}
     manifest = {
-        "stub": STUB, "rows": len(rows), "train_rows": len(train), "holdout_rows": len(holdout),
+        "stub": REACT_STUB if family == "react" else STUB, "family": family, "rows": len(rows), "train_rows": len(train), "holdout_rows": len(holdout),
         "templates": {t: sum(1 for r in rows if r["template_id"] == t) for t in template_ids},
         "controls": "rank1 compiles, runs and matches; rank3 compiles and misses; rank5 is refused; asserted on every row",
         "compiler": str(compiler), "compiler_sha": compiler_sha(compiler),
