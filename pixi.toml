@@ -15,7 +15,14 @@ python = "3.11.*"
 pyarrow = ">=17"
 huggingface_hub = ">=0.25"
 
+[feature.measure.dependencies]
+python = "3.11.*"
+pyarrow = ">=17"
+tokenizers = ">=0.20"
+huggingface_hub = ">=0.25"
+
 [environments]
+measure = { features = ["measure"], no-default-feature = true }
 write = { features = ["write"], no-default-feature = true }
 publish = { features = ["publish"], no-default-feature = true }
 
@@ -26,3 +33,6 @@ write-negative-control = "python tools/write_fbd_rows.py --rows 4 --out work/con
 
 [feature.publish.tasks]
 publish = "python tools/publish_fbd.py --stage work/stage --hub chibifire/taskweft-fbd-editscore-train"
+
+[feature.measure.tasks]
+measure-forms = "python tools/measure_forms.py --stage work/stage"
