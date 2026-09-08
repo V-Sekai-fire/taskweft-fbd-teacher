@@ -20,7 +20,9 @@ from pathlib import Path
 
 FORBIDDEN = ("c:/users", "c:\\users", "/home/", "/private/tmp")
 # A drive letter or a mount point names the desk even when no user name is in it.
-LOCAL_PATH = re.compile(r"(?i)(?:[a-z]:[\\\\/]|/mnt/[a-z]/|/users/|/home/)")
+# A drive letter needs a boundary before it: Godot prints `Camera3D:/root/...`,
+# whose "D:/" is not a drive.
+LOCAL_PATH = re.compile(r"(?i)(?:(?<![A-Za-z0-9_])[a-z]:[\\\\/]|/mnt/[a-z]/|/users/|/home/)")
 
 
 def refuse_if_absolute(root: Path) -> None:
@@ -29,9 +31,9 @@ def refuse_if_absolute(root: Path) -> None:
         import pyarrow.parquet as pq
         t = pq.read_table(p)
         for col in t.column_names:
-            if t.schema.field(col).type == "string":
+            if "string" in str(t.schema.field(col).type):
                 for v in t.column(col).to_pylist():
-                    if isinstance(v, str) and any(m in v.lower() for m in FORBIDDEN):
+                    if isinstance(v, str) and LOCAL_PATH.search(v):
                         hits.append(f"{p.relative_to(root)}:{col}")
                         break
     if hits:
@@ -49,6 +51,10 @@ def refuse_if_text_names_a_desk(root: Path) -> list[str]:
     is uploaded and once carried an absolute path naming the operator."""
     hits = []
     for p in sorted(root.rglob("*")):
+        # rows/ is the writer's scratch tree and is not uploaded; its contents
+        # reach the Hub only through the parquet columns, checked there instead.
+        if p.relative_to(root).parts[:1] == ("rows",):
+            continue
         if p.suffix.lower() not in (".json", ".md", ".txt", ".cff") or not p.is_file():
             continue
         for n, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
@@ -59,7 +65,8 @@ def refuse_if_text_names_a_desk(root: Path) -> list[str]:
 
 
 def self_test() -> int:
-    """Two controls: a planted local path is seen, and a clean tree is not."""
+    """Three controls: a clean tree passes, a planted Windows path and a planted
+    WSL mount are each seen."""
     import tempfile
     fails = []
     with tempfile.TemporaryDirectory() as d:
