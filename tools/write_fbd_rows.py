@@ -205,7 +205,7 @@ def main() -> None:
         shutil.rmtree(out)
     out.mkdir(parents=True)
     template_ids = list(TEMPLATES)
-    jobs = [(template_ids[i % len(template_ids)], i) for i in range(args.rows)]
+    jobs = [(template_ids[(i // 10) % len(template_ids)], i) for i in range(args.rows)]
 
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
