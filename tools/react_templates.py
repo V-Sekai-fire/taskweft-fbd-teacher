@@ -15,6 +15,8 @@ import random
 from dataclasses import dataclass
 from typing import Callable
 
+from frames import pick
+
 TICKS = 12
 # A binary fraction, so n frames of dt sum to exactly n * dt and a hold of n frames
 # expires on the frame the intent names (0.1 s frames put 0.8 s at 0.7999999999999999).
@@ -31,7 +33,8 @@ class ReactRow:
     rank3: str
     rank5: str
     traces: list[str]
-    expect: Callable[[list[list[dict]]], bool]
+    expect: Callable[[list[list[dict]]], bool] | None
+    frame_id: int = 0
 
 
 def _trace(ticks: list[dict]) -> str:
@@ -94,10 +97,10 @@ def t_walk_from_stick(seed: int) -> ReactRow:
                     return False
         return True
 
-    return ReactRow("walk_from_stick", seed,
-                    f"walk where the left stick points, {gain} times the stick, at most {cap} metres per second",
+    fid, intent = pick("walk_from_stick", seed, gain=gain, cap=cap)
+    return ReactRow("walk_from_stick", seed, intent,
                     prog(gain, cap), prog(wrong_gain, cap), prog(gain, cap, mn="TRUE"),
-                    [_trace(t) for t in traces], expect)
+                    [_trace(t) for t in traces], expect, fid)
 
 
 def t_face_the_stick(seed: int) -> ReactRow:
@@ -116,9 +119,10 @@ def t_face_the_stick(seed: int) -> ReactRow:
                     return False
         return True
 
-    return ReactRow("face_the_stick", seed, "face the way the left stick points",
+    fid, intent = pick("face_the_stick", seed)
+    return ReactRow("face_the_stick", seed, intent,
                     prog("lx", "ly"), prog("ly", "lx"), prog("lx", "lz"),
-                    [_trace(t) for t in traces], expect)
+                    [_trace(t) for t in traces], expect, fid)
 
 
 def t_tracker_lost_freezes(seed: int) -> ReactRow:
@@ -141,10 +145,10 @@ def t_tracker_lost_freezes(seed: int) -> ReactRow:
                     return False
         return True
 
-    return ReactRow("tracker_lost_freezes", seed,
-                    f"freeze the hair chains once the tracker has been gone for {ms} milliseconds",
+    fid, intent = pick("tracker_lost_freezes", seed, ms=ms)
+    return ReactRow("tracker_lost_freezes", seed, intent,
                     prog(f"T#{ms}ms"), prog(f"T#{2 * ms}ms"), prog("TRUE"),
-                    [_trace(t) for t in traces], expect)
+                    [_trace(t) for t in traces], expect, fid)
 
 
 def t_button_sequence_then_idle(seed: int) -> ReactRow:
@@ -169,11 +173,11 @@ def t_button_sequence_then_idle(seed: int) -> ReactRow:
                     return False
         return True
 
-    return ReactRow("button_sequence_then_idle", seed,
-                    f"when the button is pressed play style {style} for {ms} milliseconds, then idle",
+    fid, intent = pick("button_sequence_then_idle", seed, style=style, ms=ms)
+    return ReactRow("button_sequence_then_idle", seed, intent,
                     prog(style), prog(style + 1 if style < 9 else style - 1),
                     prog(style, tail="style = st.OUT\nstyle = press.Q\n"),
-                    [_trace(t) for t in traces], expect)
+                    [_trace(t) for t in traces], expect, fid)
 
 
 def t_speed_limited_run(seed: int) -> ReactRow:
@@ -194,10 +198,10 @@ def t_speed_limited_run(seed: int) -> ReactRow:
                     return False
         return True
 
-    return ReactRow("speed_limited_run", seed,
-                    f"run at {gain} times the stick, never faster than {cap} metres per second",
+    fid, intent = pick("speed_limited_run", seed, gain=gain, cap=cap)
+    return ReactRow("speed_limited_run", seed, intent,
                     prog(cap), prog(round(cap / 2, 2)), prog(cap, decl="in speed : REAL\n"),
-                    [_trace(t) for t in traces], expect)
+                    [_trace(t) for t in traces], expect, fid)
 
 
 REACT_TEMPLATES = {

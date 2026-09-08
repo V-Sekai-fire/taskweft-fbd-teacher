@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from frames import pick
+
 WORDS = ["alder", "birch", "cedar", "dune", "ember", "fjord", "glade", "heath", "islet",
          "juniper", "kelp", "larch", "moss", "nettle", "orchid", "pine", "quartz", "reed",
          "sedge", "thistle", "umber", "vale", "willow", "yarrow", "zephyr"]
@@ -73,6 +75,7 @@ class Row:
     rank3: str
     rank5: str
     expect: Callable[[Path, str], bool]
+    frame_id: int = 0
 
 
 def t_write(seed: int) -> Row:
@@ -83,10 +86,11 @@ def t_write(seed: int) -> Row:
     body3 = _in(1, _lit(path)) + _in(2, _lit(wrong)) + _block(3, "WRITE_FILE", _pin("PATH", 1) + _pin("TEXT", 2))
     # rank5: the TEXT pin is not wired, which the lowering refuses by pin name.
     body5 = _in(1, _lit(path)) + _block(3, "WRITE_FILE", _pin("PATH", 1))
-    return Row("write", seed, f"write {text} to {path}",
+    fid, intent = pick("write", seed, text=text, path=path)
+    return Row("write", seed, intent,
                _pou("write_file", body, last_block=3), _pou("write_file", body3, last_block=3),
                _pou("write_file", body5, last_block=3),
-               lambda d, out: (d / path).is_file() and (d / path).read_text(encoding="utf-8") == text)
+               lambda d, out: (d / path).is_file() and (d / path).read_text(encoding="utf-8") == text, fid)
 
 
 def t_write_then_read(seed: int) -> Row:
@@ -102,10 +106,11 @@ def t_write_then_read(seed: int) -> Row:
     body5 = (_in(1, _lit(path)) + _in(2, _lit(text))
              + _block(3, "WRITE_FILE", _pin("EN", 5, "ENO") + _pin("PATH", 1) + _pin("TEXT", 2))
              + _in(4, _lit(path)) + _block(5, "READ_FILE", _pin("EN", 3, "ENO") + _pin("PATH", 4)))
-    return Row("write_then_read", seed, f"write {text} to {path}, then check that {path} exists",
+    fid, intent = pick("write_then_read", seed, text=text, path=path)
+    return Row("write_then_read", seed, intent,
                _pou("write_then_read", body, last_block=5), _pou("write_then_read", body3, last_block=5),
                _pou("write_then_read", body5, last_block=5),
-               lambda d, out: (d / path).is_file() and "READ_FILE#5 exit 0" in out)
+               lambda d, out: (d / path).is_file() and "READ_FILE#5 exit 0" in out, fid)
 
 
 def t_run_print(seed: int) -> Row:
@@ -116,10 +121,11 @@ def t_run_print(seed: int) -> Row:
     body3 = _in(1, _lit("python")) + _in(2, _lit(f"-c print({wrong})")) + _block(3, "RUN", _pin("CMD", 1) + _pin("ARGS", 2))
     # rank5: a block the subset does not name.
     body5 = _in(1, _lit("python")) + _in(2, _lit(f"-c print({n})")) + _block(3, "EXEC", _pin("CMD", 1) + _pin("ARGS", 2))
-    return Row("run_print", seed, f"run python and print {n}",
+    fid, intent = pick("run_print", seed, n=n)
+    return Row("run_print", seed, intent,
                _pou("run_print", body, last_block=3), _pou("run_print", body3, last_block=3),
                _pou("run_print", body5, last_block=3),
-               lambda d, out: f"\n{n}\n" in "\n" + out + "\n")
+               lambda d, out: f"\n{n}\n" in "\n" + out + "\n", fid)
 
 
 def t_write_then_count(seed: int) -> Row:
@@ -155,10 +161,11 @@ def t_write_then_count(seed: int) -> Row:
     last3 = j + 2
     # rank5: the counting block names a type the subset does not have.
     body5 = body_ok.replace('typeName="RUN"', 'typeName="EXEC"', 1)
-    return Row("write_then_count", seed, f"create {k} file(s) named {', '.join(names)} and count the files in the directory",
+    fid, intent = pick("write_then_count", seed, k=k, names=", ".join(names))
+    return Row("write_then_count", seed, intent,
                _pou("write_then_count", body_ok, last_block=last), _pou("write_then_count", body3, last_block=last3),
                _pou("write_then_count", body5, last_block=last),
-               lambda d, out: f"\n{k}\n" in "\n" + out + "\n" and all((d / n).is_file() for n in names))
+               lambda d, out: f"\n{k}\n" in "\n" + out + "\n" and all((d / n).is_file() for n in names), fid)
 
 
 TEMPLATES = {

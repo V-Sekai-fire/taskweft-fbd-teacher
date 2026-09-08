@@ -13,6 +13,7 @@ in ten is written apart and never trains.
 from __future__ import annotations
 
 import argparse
+import re
 import hashlib
 import json
 import os
@@ -30,11 +31,21 @@ import pyarrow.parquet as pq
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fbd_templates import TEMPLATES, Row, row_for  # noqa: E402
 from react_templates import REACT_TEMPLATES, ReactRow, react_row_for  # noqa: E402
+from harness_templates import ensure_generated, harness_names, harness_row  # noqa: E402
+from compose_templates import PAIRS, compose_row_for  # noqa: E402
+from plan_rows import GOALS, plan_row  # noqa: E402
+from census import blocks_of  # noqa: E402
 
 HERE = Path(__file__).resolve().parent.parent
 CANDIDATES = [("rank1", 1), ("rank3", 3), ("rank5", 5)]
 STUB = ("fbd", "intent_to_fbd", "instruction_following", "input_intent", "text")
 REACT_STUB = ("react", "intent_to_controller", "instruction_following", "input_intent", "text")
+STUBS = {
+    "fbd": STUB, "react": REACT_STUB,
+    "harness": ("harness", "intent_to_block", "instruction_following", "input_intent", "text"),
+    "compose": ("compose", "intent_to_composed_controller", "instruction_following", "input_intent", "text"),
+    "plan": ("plan", "goal_to_plan", "instruction_following", "input_intent", "text"),
+}
 
 
 def find_compiler(explicit: str | None) -> Path:
@@ -148,7 +159,9 @@ def build_row(compiler: Path, out: Path, template_id: str, seed: int, negative_c
                       "fbd_sha": hashlib.sha256(getattr(row, name).encode("utf-8")).hexdigest(),
                       "provenance": f"constructed:{template_id}:seed:{seed}"})
     assert_controls(key, scores)
-    return {"key": key, "intent": row.intent, "template_id": template_id, "seed": seed,
+    xml_blocks = sorted(set(re.findall(r'typeName="([A-Z_]+)"', row.rank1)))
+    return {"key": key, "intent": row.intent, "template_id": template_id, "seed": seed, "frame_id": row.frame_id,
+            "blocks": xml_blocks,
             "candidates": cands, "scores": [scores[n] for n, _ in CANDIDATES]}
 
 
@@ -157,7 +170,30 @@ def run_compiler(compiler: Path, *args: str) -> tuple[int, str, str]:
     return p.returncode, p.stdout, p.stderr
 
 
-def score_react(compiler: Path, row: ReactRow, name: str, fbd: Path, traces: list[Path], negative_control: bool) -> dict:
+def _same_outputs(a: list[list[dict]], b: list[list[dict]]) -> bool:
+    if len(a) != len(b):
+        return False
+    for ta, tb in zip(a, b):
+        if len(ta) != len(tb):
+            return False
+        for oa, ob in zip(ta, tb):
+            if set(oa) != set(ob):
+                return False
+            for k in oa:
+                x, y = oa[k], ob[k]
+                if isinstance(x, str) or isinstance(y, str):
+                    if x != y:
+                        return False
+                elif isinstance(x, bool) or isinstance(y, bool):
+                    if bool(x) != bool(y):
+                        return False
+                elif abs(float(x) - float(y)) > 1e-6:
+                    return False
+    return True
+
+
+def score_react(compiler: Path, row: ReactRow, name: str, fbd: Path, traces: list[Path], negative_control: bool,
+                reference: list[list[dict]] | None = None) -> dict:
     """A controller: parses (the text form reads), compiles (the netlist builds), runs (the
     reference scan finishes every trace without a fault), effect (its outputs are the
     numbers the intent implies), steps = ticks simulated."""
@@ -172,29 +208,66 @@ def score_react(compiler: Path, row: ReactRow, name: str, fbd: Path, traces: lis
         compiles = code == 0
         if not compiles:
             refusal = err.strip()
-    if compiles:
+    if compiles and not traces:
+        # a step program from the planner: the effect is the plan itself, compared
+        # step for step against rank1's (the host would perform mix and git, which a
+        # scratch directory cannot)
+        code, out, err = run_compiler(compiler, "plan", str(fbd))
+        runs = code == 0
+        outs = [[{"steps": json.dumps(json.loads(out)["steps"], sort_keys=True)}]] if runs else []
+        steps = len(json.loads(out)["steps"]) if runs else 0
+        if not runs:
+            refusal = err.strip()
+    elif compiles:
         outs: list[list[dict]] = []
         runs = True
         for trace in traces:
             code, out, err = run_compiler(compiler, "sim", str(fbd), str(trace))
             lines = [json.loads(l) for l in out.splitlines() if l.strip()]
-            if code != 0 or any("fault" in l for l in lines):
+            if code != 0:
                 runs = False
-                refusal = err.strip() or next((l["fault"] for l in lines if "fault" in l), "")
+                refusal = err.strip()
                 break
-            outs.append([l["out"] for l in lines])
+            if row.expect is not None and any("fault" in l for l in lines):
+                # a template with its own expectation never faults; a fault is a failure to run
+                runs = False
+                refusal = next(l["fault"] for l in lines if "fault" in l)
+                break
+            # differential rows keep a fault as an output: both sides must fault on the same tick
+            outs.append([l["out"] if "out" in l else {"_fault": l["fault"]} for l in lines])
             steps += len(lines)
+    else:
+        outs = []
+    if compiles and row.expect is not None:
         effect = runs and row.expect(outs)
+    elif compiles:
+        # differential: rank1's own outputs are the reference for the others
+        effect = runs and (reference is None or _same_outputs(outs, reference))
     wall_ms = int((time.perf_counter() - t0) * 1000)
     if negative_control and name == "rank1":
         parses, compiles, runs, effect = False, False, False, False
-    return {"candidate": name, "parses": parses, "compiles": compiles, "runs": runs,
-            "effect_matches": effect, "steps": steps, "wall_ms": wall_ms, "refusal": refusal}
+    score = {"candidate": name, "parses": parses, "compiles": compiles, "runs": runs,
+             "effect_matches": effect, "steps": steps, "wall_ms": wall_ms, "refusal": refusal}
+    score["_outputs"] = outs if runs else None
+    return score
 
 
-def build_react_row(compiler: Path, out: Path, template_id: str, seed: int, negative_control: bool) -> dict:
-    row = react_row_for(template_id, seed)
-    key = f"react/{template_id}/{seed}"
+def controller_row_for(family: str, template_id: str, seed: int, compiler: Path) -> ReactRow:
+    if family == "react":
+        return react_row_for(template_id, seed)
+    if family == "harness":
+        return harness_row(template_id[len("harness_"):], seed)
+    if family == "compose":
+        return compose_row_for(template_id, seed)
+    if family == "plan":
+        return plan_row(int(template_id.split("#")[1]), seed, compiler)
+    raise ValueError(family)
+
+
+def build_react_row(compiler: Path, out: Path, template_id: str, seed: int, negative_control: bool, family: str = "react") -> dict:
+    row = controller_row_for(family, template_id, seed, compiler)
+    template_id = row.template_id
+    key = f"{family}/{template_id}/{seed}"
     row_dir = out / "rows" / template_id / str(seed)
     row_dir.mkdir(parents=True, exist_ok=True)
     traces = []
@@ -204,17 +277,23 @@ def build_react_row(compiler: Path, out: Path, template_id: str, seed: int, nega
         traces.append(tp)
     scores: dict[str, dict] = {}
     cands = []
+    reference = None
     for name, rank in CANDIDATES:
         fbd = row_dir / f"{name}.fbd"
         fbd.write_text(getattr(row, name), encoding="utf-8")
-        scores[name] = score_react(compiler, row, name, fbd, traces, negative_control)
+        scores[name] = score_react(compiler, row, name, fbd, traces, negative_control, reference)
+        if name == "rank1":
+            reference = scores[name].pop("_outputs")
+        else:
+            scores[name].pop("_outputs", None)
         cands.append({"candidate": name, "rank": rank,
                       "fbd_text": str(fbd.relative_to(out)).replace(os.sep, "/"),
                       "fbd_sha": hashlib.sha256(getattr(row, name).encode("utf-8")).hexdigest(),
                       "traces": len(traces),
-                      "provenance": f"constructed:{template_id}:seed:{seed}"})
+                      "provenance": f"constructed:{family}:{template_id}:seed:{seed}"})
     assert_controls(key, scores)
-    return {"key": key, "intent": row.intent, "template_id": template_id, "seed": seed,
+    return {"key": key, "intent": row.intent, "template_id": template_id, "seed": seed, "frame_id": row.frame_id,
+            "blocks": sorted(set(blocks_of(row.rank1))),
             "candidates": cands, "scores": [scores[n] for n, _ in CANDIDATES]}
 
 
@@ -229,6 +308,8 @@ def tables(rows: list[dict], stub: tuple = STUB) -> tuple[pa.Table, pa.Table, pa
         "intent": [r["intent"] for r in rows],
         "template_id": [r["template_id"] for r in rows],
         "seed": pa.array([r["seed"] for r in rows], pa.int64()),
+        "frame_id": pa.array([r.get("frame_id", 0) for r in rows], pa.int64()),
+        "blocks": pa.array([",".join(r.get("blocks", [])) for r in rows], pa.string()),
         "provenance": ["constructed:template"] * len(rows),
     })
     cand_rows = [{"row_key": r["key"], **c} for r in rows for c in r["candidates"]]
@@ -243,7 +324,7 @@ def tables(rows: list[dict], stub: tuple = STUB) -> tuple[pa.Table, pa.Table, pa
 
 
 def write_stage(stage: Path, rows: list[dict], split: str, family: str = "fbd") -> dict:
-    stub = REACT_STUB if family == "react" else STUB
+    stub = STUBS[family]
     root, candidates, scores, joined = tables(rows, stub)
     counts = {}
     for name, table in [(f"{family}_root", root), (f"{family}_candidates", candidates), (f"{family}_scores", scores), (family, joined)]:
@@ -264,8 +345,11 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=HERE / "work" / "stage")
     ap.add_argument("--compiler", default=None)
     ap.add_argument("--workers", type=int, default=8)
-    ap.add_argument("--family", choices=["fbd", "react"], default="fbd",
-                    help="fbd: the operating-system step programs; react: the per-frame controllers")
+    ap.add_argument("--family", choices=list(STUBS), default="fbd",
+                    help="fbd: operating-system step programs; react: per-frame controllers; harness: every block kind; "
+                         "compose: two controllers in one program; plan: the planner's goals")
+    ap.add_argument("--holdout-families", default="", help="template ids written to the evaluation split, never train")
+    ap.add_argument("--holdout-blocks", default="", help="block kinds whose rows go to the evaluation split, never train")
     ap.add_argument("--negative-control", action="store_true",
                     help="hand rank5's verdict to rank1; the controls must refuse the emit")
     args = ap.parse_args()
@@ -276,8 +360,23 @@ def main() -> None:
         shutil.rmtree(out)
     out.mkdir(parents=True)
     family = args.family
-    template_ids = list(REACT_TEMPLATES if family == "react" else TEMPLATES)
-    builder = build_react_row if family == "react" else build_row
+    if family == "fbd":
+        template_ids = list(TEMPLATES)
+    elif family == "react":
+        template_ids = list(REACT_TEMPLATES)
+    elif family == "harness":
+        ensure_generated(compiler)
+        template_ids = [f"harness_{n}" for n in harness_names()]
+    elif family == "compose":
+        template_ids = [f"compose_{i}" for i in range(len(PAIRS))]
+    else:
+        template_ids = [f"plan#{i}" for i in range(len(GOALS))]
+    if family == "fbd":
+        builder = build_row
+    else:
+        builder = lambda c, o, t, sd, nc: build_react_row(c, o, t, sd, nc, family)  # noqa: E731
+    holdout_families = {f for f in args.holdout_families.split(",") if f}
+    holdout_blocks = {b for b in args.holdout_blocks.split(",") if b}
     jobs = [(template_ids[(i // 10) % len(template_ids)], i) for i in range(args.rows)]
 
     t0 = time.perf_counter()
@@ -285,11 +384,20 @@ def main() -> None:
         rows = list(pool.map(lambda j: builder(compiler, out, j[0], j[1], args.negative_control), jobs))
     wall = time.perf_counter() - t0
 
-    train = [r for r in rows if r["seed"] % 10 != 0]
-    holdout = [r for r in rows if r["seed"] % 10 == 0]
-    counts = {"train": write_stage(out, train, "train", family), "holdout": write_stage(out / "holdout", holdout, "holdout", family)}
+    def evaluation(r: dict) -> bool:
+        return r["template_id"] in holdout_families or any(b in holdout_blocks for b in r.get("blocks", []))
+    eval_rows = [r for r in rows if evaluation(r)]
+    rest = [r for r in rows if not evaluation(r)]
+    train = [r for r in rest if r["seed"] % 10 != 0]
+    test = [r for r in rest if r["seed"] % 10 == 0]
+    counts = {"train": write_stage(out, train, "train", family),
+              "test": write_stage(out / "test", test, "test", family),
+              "evaluation": write_stage(out / "evaluation", eval_rows, "evaluation", family)}
     manifest = {
-        "stub": REACT_STUB if family == "react" else STUB, "family": family, "rows": len(rows), "train_rows": len(train), "holdout_rows": len(holdout),
+        "stub": STUBS[family], "family": family, "rows": len(rows), "train_rows": len(train), "test_rows": len(test),
+        "evaluation_rows": len(eval_rows), "holdout_families": sorted(holdout_families), "holdout_blocks": sorted(holdout_blocks),
+        "splits": {"train": "trains", "test": "same-distribution seed holdout (every tenth seed), the gate after training",
+                   "evaluation": "held-out families and block kinds, never trained or tuned on"},
         "templates": {t: sum(1 for r in rows if r["template_id"] == t) for t in template_ids},
         "controls": "rank1 compiles, runs and matches; rank3 compiles and misses; rank5 is refused; asserted on every row",
         "compiler": str(compiler), "compiler_sha": compiler_sha(compiler),
