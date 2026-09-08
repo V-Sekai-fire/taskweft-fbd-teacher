@@ -85,8 +85,9 @@ def hf_token_from_bao() -> str:
                BAO_CLIENT_CERT=os.path.expanduser("~/.magi/v3-leaf-int.pem"),
                BAO_CLIENT_KEY=os.path.expanduser("~/.magi/bao-client-v3.key"))
     bao = os.path.expanduser("~/bin/bao.exe")
+    # the login prints a note about not storing the token above the token itself
     tok = subprocess.run([bao, "login", "-method=cert", "-no-store", "-field=token"], env=env,
-                         capture_output=True, text=True, timeout=60).stdout.strip()
+                         capture_output=True, text=True, timeout=60).stdout.strip().splitlines()[-1].strip()
     env["BAO_TOKEN"] = tok
     hf = subprocess.run([bao, "kv", "get", "-field=hf_token", "agents/magi-16739d.agents.weftspun"], env=env,
                         capture_output=True, text=True, timeout=60).stdout.strip()
