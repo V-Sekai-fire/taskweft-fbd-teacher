@@ -60,7 +60,7 @@ def hf_token_from_bao() -> str:
 def readme(manifest: dict) -> str:
     names = ["fbd", "fbd_root", "fbd_candidates", "fbd_scores"]
     configs = "".join(
-        f"- config_name: {n}\n" + ("  default: true\n" if n == "fbd" else "")
+        f"- config_name: {n}\n" + ("  default: true\n" if n == manifest.get("family", "fbd") else "")
         + f"  data_files:\n  - split: train\n    path: data/{n}/*.parquet\n  - split: holdout\n    path: holdout/data/{n}/*.parquet\n"
         for n in names)
     return f"""---

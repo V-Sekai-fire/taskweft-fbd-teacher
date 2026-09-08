@@ -16,7 +16,9 @@ from dataclasses import dataclass
 from typing import Callable
 
 TICKS = 12
-DT = 0.1
+# A binary fraction, so n frames of dt sum to exactly n * dt and a hold of n frames
+# expires on the frame the intent names (0.1 s frames put 0.8 s at 0.7999999999999999).
+DT = 0.125
 EPS = 1e-6
 
 
@@ -118,7 +120,7 @@ def t_face_the_stick(seed: int) -> ReactRow:
 def t_tracker_lost_freezes(seed: int) -> ReactRow:
     rng = random.Random(seed)
     n = rng.randint(2, 6)
-    ms = n * 100
+    ms = n * 125
 
     def prog(pt: str) -> str:
         return (f"program tracker_lost_freezes\n{HEAD}out chain_frozen : BOOL\n"
@@ -145,7 +147,7 @@ def t_button_sequence_then_idle(seed: int) -> ReactRow:
     rng = random.Random(seed)
     style = rng.randint(1, 9)
     n = rng.randint(3, 8)
-    ms = n * 100
+    ms = n * 125
 
     def prog(k: int, tail: str = "style = st.OUT\n") -> str:
         return (f"program button_sequence_then_idle\n{HEAD}out style : INT\nvar greeting : BOOL\n"
