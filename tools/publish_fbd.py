@@ -57,8 +57,11 @@ def hf_token_from_bao() -> str:
     return hf
 
 
-def readme(manifest: dict) -> str:
-    names = ["fbd", "fbd_root", "fbd_candidates", "fbd_scores"]
+def readme(manifest: dict, hub: str = "chibifire/taskweft-fbd-editscore-train") -> str:
+    family = manifest.get("family", "fbd")
+    names = [family, f"{family}_root", f"{family}_candidates", f"{family}_scores"]
+    scored = ("the compiler's reference scan on three constructed input traces per row"
+              if family == "react" else "the compiler and a runner that performed the plan")
     configs = "".join(
         f"- config_name: {n}\n" + ("  default: true\n" if n == manifest.get("family", "fbd") else "")
         + f"  data_files:\n  - split: train\n    path: data/{n}/*.parquet\n  - split: holdout\n    path: holdout/data/{n}/*.parquet\n"
@@ -76,13 +79,13 @@ tags:
 configs:
 {configs}---
 
-# taskweft-fbd-editscore-train
+# {hub.split("/")[-1]}
 
 Intents and the IEC 61131-3 Function Block Diagrams that carry them out, as an
 EditScore-shaped corpus: one root row per intent, three candidates per row (rank1 the
 reference diagram, rank3 one that compiles and does the wrong thing, rank5 one the
-compiler refuses), and one score row per candidate from the compiler and a runner
-that performed the plan. Every row is constructed from a template and a seed, so the
+compiler refuses), and one score row per candidate from {scored}. Every row is
+constructed from a template and a seed, so the
 labels are true by construction and the corpus regenerates from the seeds. Controls
 were asserted on every row before the emit; the holdout split never trains.
 
@@ -97,19 +100,23 @@ def main() -> None:
     ap.add_argument("--stage", type=Path, required=True)
     ap.add_argument("--hub", required=True)
     ap.add_argument("--private", action="store_true")
+    ap.add_argument("--readme-only", action="store_true", help="upload the dataset card alone")
     args = ap.parse_args()
 
     stage: Path = args.stage
     manifest = json.loads((stage / "manifest.json").read_text(encoding="utf-8"))
     refuse_if_absolute(stage)
     refuse_if_forbidden(stage)
-    (stage / "README.md").write_text(readme(manifest), encoding="utf-8")
+    (stage / "README.md").write_text(readme(manifest, args.hub), encoding="utf-8")
 
     from huggingface_hub import HfApi
     api = HfApi(token=hf_token_from_bao())
     api.create_repo(args.hub, repo_type="dataset", exist_ok=True, private=args.private)
-    api.upload_folder(folder_path=str(stage), repo_id=args.hub, repo_type="dataset",
-                      ignore_patterns=["rows/**"] if False else None)
+    if args.readme_only:
+        api.upload_file(path_or_fileobj=str(stage / "README.md"), path_in_repo="README.md",
+                        repo_id=args.hub, repo_type="dataset")
+    else:
+        api.upload_folder(folder_path=str(stage), repo_id=args.hub, repo_type="dataset")
     files = api.list_repo_files(args.hub, repo_type="dataset")
     parquets = [f for f in files if f.endswith(".parquet")]
     print(f"published {args.hub}: {len(files)} file(s), {len(parquets)} parquet(s)")
