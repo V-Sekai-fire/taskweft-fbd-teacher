@@ -93,6 +93,11 @@ def _perturb(text: str, rng: random.Random) -> tuple[str, dict]:
         if a > b:
             text = text.replace(f"MN={lo.group(1)}", f"MN={hi.group(1)}").replace(f"MX={hi.group(1)}", f"MX={lo.group(1)}")
             a, b = b, a
+        if a == b:
+            # equal bounds make LIMIT a constant no mutation can move; keep the literal's form
+            b = a + 1
+            lit = f"{b}" if "." in hi.group(1) else f"{int(b)}"
+            text = re.sub(r"MX=-?[\d.]+", f"MX={lit}", text, count=1)
         params["lo"], params["hi"] = a, b
     return text, params
 
@@ -104,44 +109,86 @@ SWAP_INPUTS = {"a": "c", "b": "d", "n": "m", "m": "n", "x": "y", "y": "x", "k": 
 TYPE_SWAP = {
     "AND": "OR", "OR": "AND", "XOR": "OR", "NOT": "MOVE",
     "R_TRIG": "F_TRIG", "F_TRIG": "R_TRIG", "TON": "TOF", "TOF": "TON", "TP": "TON",
-    "SR": "RS", "RS": "SR", "MIN": "MAX", "MAX": "MIN", "ADD": "SUB", "SUB": "ADD",
+    "MIN": "MAX", "MAX": "MIN", "ADD": "SUB", "SUB": "ADD",
     "MUL": "ADD", "DIV": "SUB", "MOD": "SUB", "EQ": "NE", "NE": "EQ",
     "LT": "GE", "GT": "LE", "LE": "GT", "GE": "LT",
 }
 
 
-def _mutate(text: str, rng: random.Random) -> str:
-    """rank3: swap the block for its opposite (AND for OR, TON for TOF, LT for GE), which
-    differs on every trace that exercises it; else change a literal; else read a
-    different input. A swap of the inputs of a commutative block changes nothing."""
+def _mutations(text: str) -> list[str]:
+    """rank3 candidates, most decisive first: the latch's set and reset exchanged; the
+    block swapped for its opposite (AND for OR, TON for TOF, LT for GE); a literal
+    changed; the inputs of a non-commutative block swapped; a different input read.
+    The caller keeps the first one the traces can tell from the original."""
+    out: list[str] = []
     first = re.search(r"^(\w+) = ([A-Z_]+)\((.*)$", text, re.M)
-    if first and first.group(2) in TYPE_SWAP:
-        kind = first.group(2)
-        nary = "IN3=" in first.group(3)
-        # a block wired at arity three or more swaps within the n-ary family only
+    if first and first.group(2) in ("SR", "RS"):
+        pins = ("S1", "R") if first.group(2) == "SR" else ("S", "R1")
+        m1 = re.search(rf"{pins[0]}=(\w+(?:\.\w+)?)", first.group(3))
+        m2 = re.search(rf"{pins[1]}=(\w+(?:\.\w+)?)", first.group(3))
+        if m1 and m2 and m1.group(1) != m2.group(1):
+            line = first.group(0).replace(f"{pins[0]}={m1.group(1)}", f"{pins[0]}=@@").replace(f"{pins[1]}={m2.group(1)}", f"{pins[1]}={m1.group(1)}").replace("@@", m2.group(1))
+            out.append(text.replace(first.group(0), line, 1))
+    for blk in re.finditer(r"^(\w+) = ([A-Z_]+)\((.*)$", text, re.M):
+        kind = blk.group(2)
+        if kind not in TYPE_SWAP:
+            continue
+        nary = "IN3=" in blk.group(3)
         swap = {"ADD": "MUL", "MUL": "ADD", "AND": "OR", "OR": "AND", "XOR": "OR", "MIN": "MAX", "MAX": "MIN"}.get(kind) if nary else TYPE_SWAP[kind]
         if swap:
-            s, e = first.span(2)
-            return text[:s] + swap + text[e:]
+            s, e = blk.span(2)
+            out.append(text[:s] + swap + text[e:])
     t = re.search(r"T#(\d+)ms", text)
     if t:
-        return text.replace(t.group(0), f"T#{int(t.group(1)) * 2}ms", 1)
+        out.append(text.replace(t.group(0), f"T#{int(t.group(1)) * 2}ms", 1))
     r = re.search(r"(?<==)(-?\d+\.\d+)", text)
     if r:
-        return text[:r.start()] + f"{float(r.group(1)) + 1.0}" + text[r.end():]
+        out.append(text[:r.start()] + f"{float(r.group(1)) + 1.0}" + text[r.end():])
     i = re.search(r"(?<==)(-?\d+)(?![.\d])", text)
     if i:
-        # by span: a bare replace of "1" would hit the "1" inside "IN1="
-        return text[:i.start()] + str(int(i.group(1)) + 1) + text[i.end():]
+        out.append(text[:i.start()] + str(int(i.group(1)) + 1) + text[i.end():])
     m = re.search(r"= ([A-Z_]+)\((.*?)IN1=(\w+(?:\.\w+)?), IN2=(\w+(?:\.\w+)?)", text)
     if m and m.group(1) not in COMMUTATIVE and m.group(3) != m.group(4):
         old = f"IN1={m.group(3)}, IN2={m.group(4)}"
-        return text.replace(old, f"IN1={m.group(4)}, IN2={m.group(3)}", 1)
-    for pin in ("IN=", "IN1=", "IN2=", "CLK=", "S1=", "S=", "G=", "K="):
-        mm = re.search(rf"{pin}([abcdnmxyk])\b", text)
-        if mm and mm.group(1) in SWAP_INPUTS:
-            return text.replace(f"{pin}{mm.group(1)}", f"{pin}{SWAP_INPUTS[mm.group(1)]}", 1)
-    return text
+        out.append(text.replace(old, f"IN1={m.group(4)}, IN2={m.group(3)}", 1))
+    for pin in ("IN=", "IN1=", "IN2=", "CLK=", "S1=", "S=", "G=", "K=", "PT="):
+        for mm in re.finditer(rf"{pin}([abcdnmxyk])(?![A-Za-z0-9_.])", text):
+            if mm.group(1) in SWAP_INPUTS:
+                out.append(text[:mm.start(1)] + SWAP_INPUTS[mm.group(1)] + text[mm.end(1):])
+    return [c for c in out if c != text]
+
+
+def _sim(compiler: Path, text: str, traces: list[Path], work: Path) -> list[str]:
+    fbd = work / "candidate.fbd"
+    fbd.write_text(text, encoding="utf-8")
+    outs = []
+    for tr in traces:
+        p = subprocess.run([str(compiler), "sim", str(fbd), str(tr)], capture_output=True, text=True, timeout=120)
+        outs.append(p.stdout if p.returncode == 0 else f"refused:{p.stderr.strip()}")
+    return outs
+
+
+def _mutate(text: str, rng: random.Random, compiler: Path | None, traces: list[Path], work: Path,
+            spare: list[Path] = ()) -> tuple[str, list[Path]]:
+    """The first candidate whose outputs on the picked traces differ from the original's,
+    with the traces it was told on; when none of the picked traces can tell any
+    candidate, a spare trace that can replaces the last pick. Without a compiler, the
+    first candidate."""
+    cands = _mutations(text)
+    if not cands:
+        raise ValueError("no mutation found")
+    if compiler is None:
+        return cands[0], list(traces)
+    ref = _sim(compiler, text, traces, work)
+    for c in cands:
+        if _sim(compiler, c, traces, work) != ref:
+            return c, list(traces)
+    for tr in spare:
+        r1 = _sim(compiler, text, [tr], work)
+        for c in cands:
+            if _sim(compiler, c, [tr], work) != r1:
+                return c, list(traces[:-1]) + [tr]
+    raise ValueError("every mutation is invisible on every trace")
 
 
 def _refuse(text: str) -> str:
@@ -149,7 +196,7 @@ def _refuse(text: str) -> str:
     return re.sub(r"=(a|n|x)\b", "=zz", text, count=1)
 
 
-def harness_row(name: str, seed: int) -> ReactRow:
+def harness_row(name: str, seed: int, compiler: Path | None = None) -> ReactRow:
     # a stable hash: Python's str hash is salted per process and would unseed the corpus
     rng = random.Random(seed * 1000 + zlib.crc32(name.encode("utf-8")) % 997)
     base = (GEN_DIR / f"{name}.fbd").read_text(encoding="utf-8")
@@ -160,8 +207,11 @@ def harness_row(name: str, seed: int) -> ReactRow:
     intent = frames[fid].format(**{"pt": params.get("pt", 300), "lo": params.get("lo", 0), "hi": params.get("hi", 1)})
     traces = sorted(GEN_DIR.glob("trace_*.json"))
     picked = [traces[(seed + i * 5) % len(traces)] for i in range(3)]
-    rank3 = _mutate(text, rng)
-    if rank3 == text:
-        raise ValueError(f"{name}: no mutation found")
+    work = HERE / "work" / "mut" / f"{name}_{seed}"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        rank3, picked = _mutate(text, rng, compiler, picked, work, [t for t in traces if t not in picked])
+    except ValueError as e:
+        raise ValueError(f"{name}/{seed}: {e}") from None
     return ReactRow(f"harness_{name}", seed, intent, text, rank3, _refuse(text),
                     [p.read_text(encoding="utf-8") for p in picked], None, fid)

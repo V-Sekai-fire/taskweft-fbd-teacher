@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -34,6 +35,9 @@ from react_templates import REACT_TEMPLATES, ReactRow, react_row_for  # noqa: E4
 from harness_templates import ensure_generated, harness_names, harness_row  # noqa: E402
 from compose_templates import PAIRS, compose_row_for  # noqa: E402
 from plan_rows import GOALS, plan_row  # noqa: E402
+from godot_api_templates import GODOT_TEMPLATES, godot_row_for, signatures_of  # noqa: E402
+from trainer_api_templates import TRAINER_TEMPLATES, trainer_row_for  # noqa: E402
+from udon_templates import TEMPLATES as UDON_TEMPLATES, udon_row  # noqa: E402
 from census import blocks_of  # noqa: E402
 
 HERE = Path(__file__).resolve().parent.parent
@@ -45,19 +49,89 @@ STUBS = {
     "harness": ("harness", "intent_to_block", "instruction_following", "input_intent", "text"),
     "compose": ("compose", "intent_to_composed_controller", "instruction_following", "input_intent", "text"),
     "plan": ("plan", "goal_to_plan", "instruction_following", "input_intent", "text"),
+    "godot": ("godot", "intent_to_api_calls", "instruction_following", "input_intent", "text"),
+    "trainer": ("trainer", "intent_to_trainer_config", "instruction_following", "input_intent", "text"),
+    "udon": ("udon", "udonsharp_to_fbd", "translation", "input_source", "text"),
 }
+
+_trainer_local = threading.local()
+
+
+class TrainerServer:
+    """One config runner per worker thread, in WSL, one JSON line per plan."""
+
+    def __init__(self) -> None:
+        # a script file rather than bash -c: the interop layer mangles a long -c string
+        cmd = ["wsl.exe", "--", "bash", "/mnt/c/fabric-starforged/3-interactor/taskweft-fbd-teacher/scripts/serve_trainer.sh"]
+        self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                  text=True, encoding="utf-8", bufsize=1)
+        for line in self.p.stdout:
+            if line.startswith("{") and json.loads(line).get("ready"):
+                break
+        else:
+            raise RuntimeError("the trainer config runner did not come up")
+
+    def ask(self, steps: list[dict]) -> dict:
+        self.p.stdin.write(json.dumps({"steps": steps}) + "\n")
+        self.p.stdin.flush()
+        for line in self.p.stdout:
+            if line.startswith("{"):
+                return json.loads(line)
+        raise RuntimeError("the trainer config runner went away")
+
+
+def perform_in_trainer(plan_json: str) -> tuple[bool, dict, str]:
+    srv = getattr(_trainer_local, "srv", None)
+    if srv is None:
+        srv = _trainer_local.srv = TrainerServer()
+    res = srv.ask(json.loads(plan_json)["steps"])
+    return bool(res.get("ok")), res.get("table", {}), res.get("error", "")
+
+GODOT_PROJECT = HERE.parent / "taskweft-godot-sandbox" / "priv" / "godot_project"
+
+
+def find_godot() -> Path:
+    env = os.environ.get("TASKWEFT_GODOT")
+    if env:
+        return Path(env)
+    sys.exit("FAIL: the godot family needs TASKWEFT_GODOT, the path to a Godot 4.5 executable")
+
+
+def perform_in_godot(plan_json: str, row_dir: Path, name: str) -> tuple[bool, list[dict], str]:
+    """The API runner performs the plan on the fixture scene; returns (ran, results, error)."""
+    plan = row_dir / f"{name}.plan.json"
+    out = row_dir / f"{name}.result.json"
+    plan.write_text(plan_json, encoding="utf-8")
+    cmd = [str(find_godot()), "--headless", "--path", str(GODOT_PROJECT), "--script", "res://scripts/api_runner.gd",
+           "--", "--plan", str(plan.resolve()), "--out", str(out.resolve())]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return False, [], "godot timed out"
+    m = re.search(r"^exit (\d+)", r.stdout, re.M)
+    if not m or not out.is_file():
+        return False, [], (r.stderr.strip() or r.stdout.strip())[-400:] or "godot wrote no result"
+    results = json.loads(out.read_text(encoding="utf-8")).get("results", [])
+    if m.group(1) != "0":
+        failed = next((x for x in results if not x.get("ok")), None)
+        return False, results, f"{failed['command']} did not run" if failed else f"godot exit {m.group(1)}"
+    return True, results, ""
 
 
 def find_compiler(explicit: str | None) -> Path:
     if explicit:
-        return Path(explicit)
-    env = os.environ.get("FBD_COMPILER")
-    if env:
-        return Path(env)
-    exe = "taskweft_fbd_compiler.exe" if os.name == "nt" else "taskweft_fbd_compiler"
-    p = HERE.parent / "taskweft-fbd-compiler" / ".lake" / "build" / "bin" / exe
+        p = Path(explicit)
+    elif os.environ.get("FBD_COMPILER"):
+        p = Path(os.environ["FBD_COMPILER"])
+    else:
+        exe = "taskweft_fbd_compiler.exe" if os.name == "nt" else "taskweft_fbd_compiler"
+        p = HERE.parent / "taskweft-fbd-compiler" / ".lake" / "build" / "bin" / exe
     if not p.is_file():
         sys.exit(f"FAIL: no compiler at {p}; build taskweft-fbd-compiler or pass --compiler")
+    # the signature tables sit beside the compiler's source, not the writer's cwd
+    sigs = p.resolve().parents[3] / "sigs"
+    if "TASKWEFT_SIGS_DIR" not in os.environ and sigs.is_dir():
+        os.environ["TASKWEFT_SIGS_DIR"] = str(sigs)
     return p
 
 
@@ -208,7 +282,32 @@ def score_react(compiler: Path, row: ReactRow, name: str, fbd: Path, traces: lis
         compiles = code == 0
         if not compiles:
             refusal = err.strip()
-    if compiles and not traces:
+    if compiles and row.host == "godot":
+        # an API program: the engine performs the calls and the returns are the effect
+        code, out, err = run_compiler(compiler, "plan", str(fbd))
+        if code != 0:
+            refusal = err.strip()
+            outs = []
+        else:
+            runs, results, err = perform_in_godot(out, fbd.parent, name)
+            outs = [[{"results": json.dumps(results, sort_keys=True)}]]
+            steps = len(results)
+            if not runs:
+                refusal = err
+    elif compiles and row.host == "trainer":
+        # a configuration program: the runner applies it to the task config in WSL and
+        # the term table read back from the config is the effect
+        code, out, err = run_compiler(compiler, "plan", str(fbd))
+        if code != 0:
+            refusal = err.strip()
+            outs = []
+        else:
+            runs, tbl, err = perform_in_trainer(out)
+            outs = [[{"table": json.dumps(tbl, sort_keys=True)}]]
+            steps = len(json.loads(out)["steps"])
+            if not runs:
+                refusal = err
+    elif compiles and not traces:
         # a step program from the planner: the effect is the plan itself, compared
         # step for step against rank1's (the host would perform mix and git, which a
         # scratch directory cannot)
@@ -238,7 +337,11 @@ def score_react(compiler: Path, row: ReactRow, name: str, fbd: Path, traces: lis
             steps += len(lines)
     else:
         outs = []
-    if compiles and row.expect is not None:
+    if compiles and row.host == "godot":
+        effect = runs and row.expect(json.loads(outs[0][0]["results"]) if outs else [])
+    elif compiles and row.host == "trainer":
+        effect = runs and row.expect(json.loads(outs[0][0]["table"]) if outs else {})
+    elif compiles and row.expect is not None:
         effect = runs and row.expect(outs)
     elif compiles:
         # differential: rank1's own outputs are the reference for the others
@@ -256,9 +359,15 @@ def controller_row_for(family: str, template_id: str, seed: int, compiler: Path)
     if family == "react":
         return react_row_for(template_id, seed)
     if family == "harness":
-        return harness_row(template_id[len("harness_"):], seed)
+        return harness_row(template_id[len("harness_"):], seed, compiler)
     if family == "compose":
         return compose_row_for(template_id, seed)
+    if family == "godot":
+        return godot_row_for(template_id, seed)
+    if family == "trainer":
+        return trainer_row_for(template_id, seed)
+    if family == "udon":
+        return udon_row(template_id, seed, compiler, find_godot())
     if family == "plan":
         return plan_row(int(template_id.split("#")[1]), seed, compiler)
     raise ValueError(family)
@@ -293,7 +402,7 @@ def build_react_row(compiler: Path, out: Path, template_id: str, seed: int, nega
                       "provenance": f"constructed:{family}:{template_id}:seed:{seed}"})
     assert_controls(key, scores)
     return {"key": key, "intent": row.intent, "template_id": template_id, "seed": seed, "frame_id": row.frame_id,
-            "blocks": sorted(set(blocks_of(row.rank1))),
+            "blocks": sorted(set(signatures_of(row.rank1) if row.host in ("godot", "trainer") else blocks_of(row.rank1))),
             "candidates": cands, "scores": [scores[n] for n, _ in CANDIDATES]}
 
 
@@ -369,6 +478,12 @@ def main() -> None:
         template_ids = [f"harness_{n}" for n in harness_names()]
     elif family == "compose":
         template_ids = [f"compose_{i}" for i in range(len(PAIRS))]
+    elif family == "godot":
+        template_ids = list(GODOT_TEMPLATES)
+    elif family == "trainer":
+        template_ids = list(TRAINER_TEMPLATES)
+    elif family == "udon":
+        template_ids = list(UDON_TEMPLATES)
     else:
         template_ids = [f"plan#{i}" for i in range(len(GOALS))]
     if family == "fbd":
