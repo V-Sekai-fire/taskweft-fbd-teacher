@@ -3,3 +3,5 @@ work/
 __pycache__/
 *.pyc
 *.egg-info/
+_build/
+deps/
