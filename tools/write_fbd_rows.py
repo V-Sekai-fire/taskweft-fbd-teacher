@@ -98,16 +98,17 @@ def find_godot() -> Path:
 
 
 def godot_record() -> dict:
-    """The engine that scored the stage: path, sha256 and version string, or a refusal."""
+    """The engine that scored the stage, by name and sha256. A published manifest
+    carries no local path: it would name the desk and its user."""
     if not os.environ.get("TASKWEFT_GODOT"):
-        return {"godot_path": "none", "godot_sha": "none", "godot_version": "none"}
+        return {"godot_name": "none", "godot_sha": "none", "godot_version": "none"}
     g = find_godot()
     if not g.is_file():
         sys.exit(f"FAIL: TASKWEFT_GODOT names no file: {g}")
     sha = hashlib.sha256(g.read_bytes()).hexdigest()
     r = subprocess.run([str(g), "--version"], capture_output=True, text=True, timeout=60)
     version = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "unknown"
-    return {"godot_path": str(g), "godot_sha": sha, "godot_version": version}
+    return {"godot_name": g.name, "godot_sha": sha, "godot_version": version}
 
 
 def perform_in_godot(plan_json: str, row_dir: Path, name: str) -> tuple[bool, list[dict], str]:
@@ -530,7 +531,7 @@ def main() -> None:
                    "evaluation": "held-out families and block kinds, never trained or tuned on"},
         "templates": {t: sum(1 for r in rows if r["template_id"] == t) for t in template_ids},
         "controls": "rank1 compiles, runs and matches; rank3 compiles and misses; rank5 is refused; asserted on every row",
-        "compiler": str(compiler), "compiler_sha": compiler_sha(compiler), **godot_record(),
+        "compiler": Path(compiler).name, "compiler_sha": compiler_sha(compiler), **godot_record(),
         "wall_s": round(wall, 1), "counts": counts,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

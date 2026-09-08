@@ -4,7 +4,7 @@ The token is the `hf_token` field of this desk's `agents/<cn>` row in OpenBao, r
 with a cert login that stores nothing. The upload is `upload_folder` with no delete
 patterns, so a rerun adds shards. The README's `configs` block gives the viewer one
 config per table with the joined view as the default; without it every directory
-folds into one table. Nothing leaves until the stage passes the two refusals below.
+folds into one table. Nothing leaves until the stage passes the three refusals below.
 
     python tools/publish_fbd.py --stage work/stage --hub chibifire/taskweft-fbd-editscore-train
 """
@@ -14,10 +14,13 @@ import argparse
 import json
 import os
 import subprocess
+import re
 import sys
 from pathlib import Path
 
 FORBIDDEN = ("c:/users", "c:\\users", "/home/", "/private/tmp")
+# A drive letter or a mount point names the desk even when no user name is in it.
+LOCAL_PATH = re.compile(r"(?i)(?:[a-z]:[\\\\/]|/mnt/[a-z]/|/users/|/home/)")
 
 
 def refuse_if_absolute(root: Path) -> None:
@@ -39,6 +42,41 @@ def refuse_if_forbidden(root: Path) -> None:
     bad = [str(p) for p in root.rglob("*") if any(m in str(p).lower() for m in FORBIDDEN)]
     if bad:
         sys.exit(f"REFUSED: blocked marker in staged path: {bad[:5]}")
+
+
+def refuse_if_text_names_a_desk(root: Path) -> list[str]:
+    """Every staged JSON and Markdown file is read, not just its name: the manifest
+    is uploaded and once carried an absolute path naming the operator."""
+    hits = []
+    for p in sorted(root.rglob("*")):
+        if p.suffix.lower() not in (".json", ".md", ".txt", ".cff") or not p.is_file():
+            continue
+        for n, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if LOCAL_PATH.search(line):
+                hits.append(f"{p.relative_to(root)}:{n}")
+                break
+    return hits
+
+
+def self_test() -> int:
+    """Two controls: a planted local path is seen, and a clean tree is not."""
+    import tempfile
+    fails = []
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "manifest.json").write_text('{"compiler": "taskweft_fbd_compiler.exe"}', encoding="utf-8")
+        if refuse_if_text_names_a_desk(root):
+            fails.append("a clean manifest was refused")
+        (root / "planted.json").write_text('{"godot_path": "C:\\\\Users\\\\someone\\\\godot.exe"}', encoding="utf-8")
+        if not refuse_if_text_names_a_desk(root):
+            fails.append("the planted local path was not seen; the gate is decoration")
+        (root / "planted.json").write_text('{"p": "/mnt/c/fabric-starforged/x"}', encoding="utf-8")
+        if not refuse_if_text_names_a_desk(root):
+            fails.append("the planted WSL mount was not seen")
+    for f in fails:
+        print("FAIL", f)
+    print(f"{3 - len(fails)} of 3 controls fired.")
+    return 1 if fails else 0
 
 
 def hf_token_from_bao() -> str:
@@ -119,12 +157,18 @@ def main() -> None:
     ap.add_argument("--hub", required=True)
     ap.add_argument("--private", action="store_true")
     ap.add_argument("--readme-only", action="store_true", help="upload the dataset card alone")
+    ap.add_argument("--self-test", action="store_true", help="run the local-path controls and exit")
     args = ap.parse_args()
+    if args.self_test:
+        raise SystemExit(self_test())
 
     stage: Path = args.stage
     manifest = json.loads((stage / "manifest.json").read_text(encoding="utf-8"))
     refuse_if_absolute(stage)
     refuse_if_forbidden(stage)
+    named = refuse_if_text_names_a_desk(stage)
+    if named:
+        sys.exit(f"REFUSED: {len(named)} staged file(s) name a local filesystem: {named[:5]}")
     (stage / "README.md").write_text(readme(manifest, args.hub), encoding="utf-8")
 
     from huggingface_hub import HfApi
