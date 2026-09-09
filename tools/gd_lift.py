@@ -77,6 +77,9 @@ class ExprParser:
         return self.t[self.i] if self.i < len(self.t) else None
 
     def take(self) -> str:
+        # a refusal rather than an IndexError, which lift_all does not catch
+        if self.i >= len(self.t):
+            raise Refused("expression: ended early")
         v = self.t[self.i]
         self.i += 1
         return v
@@ -92,8 +95,11 @@ class ExprParser:
         if self.peek() == "if":
             self.take()
             c = self.binary(1)
-            if self.take() != "else":
+            # peek before taking: at the end of the tokens `take` raised IndexError,
+            # which lift_all does not catch, so the method crashed instead of refusing.
+            if self.peek() != "else":
                 raise Refused("expression: ternary without else")
+            self.take()
             o = self.ternary()
             return Cond(c, e, o)
         return e
@@ -125,8 +131,9 @@ class ExprParser:
             raise Refused("expression: ended early")
         if p == "(":
             e = self.ternary()
-            if self.take() != ")":
+            if self.peek() != ")":
                 raise Refused("expression: unbalanced parenthesis")
+            self.take()
             return e
         if re.fullmatch(r"\d+\.\d*(?:e[-+]?\d+)?", p):
             return Lit(p if not p.endswith(".") else p + "0", "REAL")
