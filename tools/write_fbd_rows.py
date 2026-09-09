@@ -97,6 +97,20 @@ def find_godot() -> Path:
     sys.exit("FAIL: the godot family needs TASKWEFT_GODOT, the path to a Godot 4.5 executable")
 
 
+def godot_record() -> dict:
+    """The engine that scored the stage, by name and sha256. A published manifest
+    carries no local path: it would name the desk and its user."""
+    if not os.environ.get("TASKWEFT_GODOT"):
+        return {"godot_name": "none", "godot_sha": "none", "godot_version": "none"}
+    g = find_godot()
+    if not g.is_file():
+        sys.exit(f"FAIL: TASKWEFT_GODOT names no file: {g}")
+    sha = hashlib.sha256(g.read_bytes()).hexdigest()
+    r = subprocess.run([str(g), "--version"], capture_output=True, text=True, timeout=60)
+    version = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "unknown"
+    return {"godot_name": g.name, "godot_sha": sha, "godot_version": version}
+
+
 def perform_in_godot(plan_json: str, row_dir: Path, name: str) -> tuple[bool, list[dict], str]:
     """The API runner performs the plan on the fixture scene; returns (ran, results, error)."""
     plan = row_dir / f"{name}.plan.json"
@@ -217,6 +231,11 @@ def assert_controls(key: str, scores: dict[str, dict]) -> None:
         raise SystemExit(f"negative control failed on {key}: rank5 compiled: {r5}")
 
 
+def _read(path: Path) -> str:
+    """A missing artefact is an empty string; ETNF forbids the null."""
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
 def build_row(compiler: Path, out: Path, template_id: str, seed: int, negative_control: bool) -> dict:
     row = row_for(template_id, seed)
     key = f"fbd/{template_id}/{seed}"
@@ -229,13 +248,16 @@ def build_row(compiler: Path, out: Path, template_id: str, seed: int, negative_c
         xml_path.write_text(getattr(row, name), encoding="utf-8")
         scores[name] = score_candidate(compiler, row, name, xml_path, negative_control)
         cands.append({"candidate": name, "rank": rank,
-                      "fbd_xml": str(xml_path.relative_to(out)).replace(os.sep, "/"),
+                      "fbd_text": "",
+                      "fbd_xml": getattr(row, name),
+                      "plan_json": "", "result_json": "",
+                      "fbd_path": f"rows/{template_id}/{seed}/{name}",
                       "fbd_sha": hashlib.sha256(getattr(row, name).encode("utf-8")).hexdigest(),
                       "provenance": f"constructed:{template_id}:seed:{seed}"})
     assert_controls(key, scores)
     xml_blocks = sorted(set(re.findall(r'typeName="([A-Z_]+)"', row.rank1)))
     return {"key": key, "intent": row.intent, "template_id": template_id, "seed": seed, "frame_id": row.frame_id,
-            "blocks": xml_blocks,
+            "blocks": xml_blocks, "traces": [],
             "candidates": cands, "scores": [scores[n] for n, _ in CANDIDATES]}
 
 
@@ -395,14 +417,19 @@ def build_react_row(compiler: Path, out: Path, template_id: str, seed: int, nega
             reference = scores[name].pop("_outputs")
         else:
             scores[name].pop("_outputs", None)
+        xml = row_dir / f"{name}.plcopen.xml"
         cands.append({"candidate": name, "rank": rank,
-                      "fbd_text": str(fbd.relative_to(out)).replace(os.sep, "/"),
+                      "fbd_text": getattr(row, name),
+                      "fbd_xml": xml.read_text(encoding="utf-8") if xml.is_file() else "",
+                      "plan_json": _read(row_dir / f"{name}.plan.json"),
+                      "result_json": _read(row_dir / f"{name}.result.json"),
+                      "fbd_path": f"rows/{template_id}/{seed}/{name}",
                       "fbd_sha": hashlib.sha256(getattr(row, name).encode("utf-8")).hexdigest(),
-                      "traces": len(traces),
                       "provenance": f"constructed:{family}:{template_id}:seed:{seed}"})
     assert_controls(key, scores)
     return {"key": key, "intent": row.intent, "template_id": template_id, "seed": seed, "frame_id": row.frame_id,
             "blocks": sorted(set(signatures_of(row.rank1) if row.host in ("godot", "trainer") else blocks_of(row.rank1))),
+            "traces": list(row.traces),
             "candidates": cands, "scores": [scores[n] for n, _ in CANDIDATES]}
 
 
@@ -419,6 +446,7 @@ def tables(rows: list[dict], stub: tuple = STUB) -> tuple[pa.Table, pa.Table, pa
         "seed": pa.array([r["seed"] for r in rows], pa.int64()),
         "frame_id": pa.array([r.get("frame_id", 0) for r in rows], pa.int64()),
         "blocks": pa.array([",".join(r.get("blocks", [])) for r in rows], pa.string()),
+        "traces": pa.array([r.get("traces", []) for r in rows], pa.list_(pa.string())),
         "provenance": ["constructed:template"] * len(rows),
     })
     cand_rows = [{"row_key": r["key"], **c} for r in rows for c in r["candidates"]]
@@ -464,6 +492,8 @@ def main() -> None:
     args = ap.parse_args()
 
     compiler = find_compiler(args.compiler)
+    if compiler_sha(compiler) == "unknown":
+        sys.exit(f"FAIL: the compiler at {compiler} has no committed sha (built outside its repository); build it in-tree")
     out: Path = args.out
     if out.exists():
         shutil.rmtree(out)
@@ -515,7 +545,7 @@ def main() -> None:
                    "evaluation": "held-out families and block kinds, never trained or tuned on"},
         "templates": {t: sum(1 for r in rows if r["template_id"] == t) for t in template_ids},
         "controls": "rank1 compiles, runs and matches; rank3 compiles and misses; rank5 is refused; asserted on every row",
-        "compiler": str(compiler), "compiler_sha": compiler_sha(compiler),
+        "compiler": Path(compiler).name, "compiler_sha": compiler_sha(compiler), **godot_record(),
         "wall_s": round(wall, 1), "counts": counts,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

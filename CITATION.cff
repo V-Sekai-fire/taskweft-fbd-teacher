@@ -9,3 +9,45 @@ authors:
     alias: iFire
 repository-code: "https://github.com/v-sekai-fabric/taskweft-fbd-teacher"
 abstract: "A teacher language model whose only output is an IEC 61131-3 Function Block Diagram, gained in three steps: a constructed EditScore-shaped dataset, continued pretraining of Gemma 4 E2B under QAT, and reinforcement training with the compiler and the sandbox as the hard half of the reward."
+references:
+  - type: dataset
+    title: Second-hand fashion dataset v3
+    url: https://huggingface.co/datasets/chibifire/zenodo-second-hand-fashion-v3
+    doi: 10.5281/zenodo.13788681
+    license: CC-BY-4.0
+    notes: "DressOn garments, train split only; the gold eval garments are the evaluation set; the test split is blinded."
+  - type: dataset
+    title: STARFORGED-STD-3001 Vol 2 Appendix E
+    url: https://huggingface.co/datasets/chibifire/starforged-std-3001-appendix-e
+    license: CC-BY-4.0
+    notes: "Identity and DressOn cells; four cells held out to evaluation in every trait."
+  - type: dataset
+    title: anny-dress-on-stage-train
+    url: https://huggingface.co/datasets/chibifire/anny-dress-on-stage-train
+    license: CC-BY-4.0
+    notes: "The 12 generated DressEdit targets that seed the anchor stage."
+  - type: dataset
+    title: VRM 1.0 constraint and twist sample
+    repository-code: https://github.com/V-Sekai-fire/SK_VRM1_Constraint_Twist_Sample
+    license: MIT
+    notes: "Constructed fixture input for the Spring trait: 22 springBone chains; no row carries its bytes."
+  - type: software
+    title: udon2godot
+    url: https://github.com/v-sekai-fabric/udon2godot
+    license: BSD-2-Clause
+    notes: "Translator for the Udon trait's constructed fixture methods."
+  - type: software
+    title: taskweft-fbd-compiler
+    url: https://github.com/v-sekai-fabric/taskweft-fbd-compiler
+    license: MIT
+  - type: software
+    title: Godot Engine
+    version: 4.5.stable.official.876b29033
+    url: https://godotengine.org
+    license: MIT
+    notes: "The corpus scorer of record; sha256 7b77f3735dec3a32bb20af29cc1900583795d1de82a14f23d23350a88ec85faf."
+  - type: data
+    title: MotionBricks G1 GGML bundle
+    url: https://huggingface.co/LocalAI-io/MotionBricks-G1-GGML
+    version: cc2a47603dbc203a4f18f35dd06ed3611833f506
+    notes: "The motion-bricks runtime and style bundle placed under 5-repository; the Hub repository carries no CITATION.cff of its own, so this entry is the citation of record."
