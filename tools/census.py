@@ -41,9 +41,15 @@ def rows_of(stage: Path, split_dir: Path) -> list[dict]:
     out = []
     for r in root:
         c = ref[r["key"]]
-        path = stage / (c.get("fbd_text") or c.get("fbd_xml"))
-        text = path.read_text(encoding="utf-8")
-        if path.suffix == ".xml":
+        # The columns carry the program itself since payload moved into the parquet;
+        # fbd_path is the staged copy and is provenance, not the source of truth.
+        text, is_xml = c.get("fbd_text"), False
+        if not text:
+            text, is_xml = c.get("fbd_xml"), True
+        if not text:
+            path = stage / c["fbd_path"]
+            text, is_xml = path.read_text(encoding="utf-8"), path.suffix == ".xml"
+        if is_xml:
             text = re.sub(r'typeName="([A-Z_]+)"', lambda m: f"\n_ = {m.group(1)}(", text)
         out.append({"family": fam, "template": r["template_id"], "frame": r.get("frame_id", 0),
                     "blocks": blocks_of(text), "text": text})
