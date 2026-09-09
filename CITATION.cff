@@ -7,7 +7,7 @@ authors:
   - family-names: Lee
     given-names: K. S. Ernest
     alias: iFire
-repository-code: "https://github.com/v-sekai-fabric/taskweft-fbd-teacher"
+repository-code: "https://github.com/V-Sekai-fire/taskweft-fbd-teacher"
 abstract: "A teacher language model whose only output is an IEC 61131-3 Function Block Diagram, gained in three steps: a constructed EditScore-shaped dataset, continued pretraining of Gemma 4 E2B under QAT, and reinforcement training with the compiler and the sandbox as the hard half of the reward."
 references:
   - type: dataset
@@ -33,12 +33,12 @@ references:
     notes: "Constructed fixture input for the Spring trait: 22 springBone chains; no row carries its bytes."
   - type: software
     title: udon2godot
-    url: https://github.com/v-sekai-fabric/udon2godot
+    url: https://github.com/V-Sekai-fire/udon2godot
     license: BSD-2-Clause
     notes: "Translator for the Udon trait's constructed fixture methods."
   - type: software
     title: taskweft-fbd-compiler
-    url: https://github.com/v-sekai-fabric/taskweft-fbd-compiler
+    url: https://github.com/V-Sekai-fire/taskweft-fbd-compiler
     license: MIT
   - type: software
     title: Godot Engine
